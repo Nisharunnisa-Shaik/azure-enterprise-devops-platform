@@ -8,16 +8,69 @@ on:
       branch_name:
         required: true
         type: string
-      keyvault_name:
+      environment_name:
+        description: GitHub Environment name that supplies AKS settings and deployment protection
         required: true
         type: string
-      secret_names:
-        required: true
-        type: string
-      msi_id:
+      aks_name:
+        description: AKS cluster name
         required: false
         type: string
-      azure_subscription:
+      aks_resource_group:
+        description: Resource group containing the AKS cluster
+        required: false
+        type: string
+      aks_subscription:
+        description: Subscription containing the AKS cluster
+        required: false
+        type: string
+      aks_namespace:
+        description: Kubernetes namespace to deploy into
+        required: false
+        type: string
+      keyvault_name:
+        description: Key Vault containing the target Azure login credentials
+        required: false
+        type: string
+      keyvault_subscription:
+        description: Subscription containing the Key Vault; defaults to the AKS subscription
+        required: false
+        type: string
+      auth_method:
+        description: Target Azure login method after bootstrapping from the runner managed identity
+        required: false
+        type: string
+        default: msi
+      msi_id_secret_name:
+        description: Key Vault secret name containing the managed identity client ID
+        required: false
+        type: string
+        default: MSI_ID
+      client_id_secret_name:
+        description: Key Vault secret name containing the service principal client ID
+        required: false
+        type: string
+        default: AZURE_CLIENT_ID
+      client_secret_secret_name:
+        description: Key Vault secret name containing the service principal client secret
+        required: false
+        type: string
+        default: AZURE_CLIENT_SECRET
+      tenant_id_secret_name:
+        description: Key Vault secret name containing the service principal tenant ID
+        required: false
+        type: string
+        default: AZURE_TENANT_ID
+      image_reference:
+        description: Immutable ACR image reference to deploy (registry/repository@sha256:digest)
+        required: false
+        type: string
+      container_name:
+        description: Kubernetes container name to update to image_reference
+        required: false
+        type: string
+      deployment_name:
+        description: Kubernetes Deployment to update when image_reference is provided
         required: false
         type: string
       kustomize_path:
@@ -25,42 +78,97 @@ on:
         type: string
         default: .
         description: Path to the Kustomize overlay or base in the checked-out repository
-    secrets:
-      azure_client_id:
-        required: false
-      azure_client_secret:
-        required: false
-      azure_tenant_id:
-        required: false
   jobs:
     aks_deploy:
-      runs-on: ubuntu-latest
+      environment: ${{ inputs.environment_name }}
+      runs-on: selfhosted-ubuntu
       steps:
         - name: Checkout Code
-          uses: actions/checkout@v3
+          uses: actions/checkout@v4
           with:
             repository: ${{ inputs.repo_name }}
             ref: ${{ inputs.branch_name }}
-        
-        - name: Login to Azure
-          uses: azure-enterprise-devops-platform/.github/actions/azure/login@main 
-          with:
-            msi_id: ${{ inputs.msi_id }}
-            client_id: ${{ secrets.azure_client_id }}
-            client_secret: ${{ secrets.azure_client_secret }}
-            tenant_id: ${{ secrets.azure_tenant_id }}
-            azure_subscription: ${{ inputs.azure_subscription }}
 
-        - name: Fetch Secrets from Azure Key Vault
-          uses: azure-enterprise-devops-platform/.github/actions/azure/akv/secrets@main
+        - name: Validate deployment configuration
+          shell: bash
+          env:
+            AKS_NAME: ${{ inputs.aks_name || vars.AKS_NAME }}
+            AKS_RESOURCE_GROUP: ${{ inputs.aks_resource_group || vars.AKS_RESOURCE_GROUP }}
+            AKS_SUBSCRIPTION: ${{ inputs.aks_subscription || vars.AKS_SUBSCRIPTION }}
+            AKS_NAMESPACE: ${{ inputs.aks_namespace || vars.AKS_NAMESPACE }}
+            KEYVAULT_NAME: ${{ inputs.keyvault_name || vars.KEYVAULT_NAME }}
+            IMAGE_REFERENCE: ${{ inputs.image_reference }}
+            CONTAINER_NAME: ${{ inputs.container_name || vars.CONTAINER_NAME }}
+            DEPLOYMENT_NAME: ${{ inputs.deployment_name || vars.DEPLOYMENT_NAME }}
+          run: |
+            set -euo pipefail
+            for name in AKS_NAME AKS_RESOURCE_GROUP AKS_SUBSCRIPTION AKS_NAMESPACE KEYVAULT_NAME; do
+              if [[ -z "${!name}" ]]; then
+                echo "Missing required deployment setting: $name" >&2
+                exit 1
+              fi
+            done
+            if [[ -n "$IMAGE_REFERENCE" ]]; then
+              if [[ "$IMAGE_REFERENCE" != *@sha256:* ]]; then
+                echo "image_reference must be pinned by digest (repository@sha256:digest)." >&2
+                exit 1
+              fi
+              if [[ -z "$CONTAINER_NAME" || -z "$DEPLOYMENT_NAME" ]]; then
+                echo "container_name and deployment_name are required when image_reference is provided." >&2
+                exit 1
+              fi
+            fi
+
+        - name: Login to Azure
+          uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/azure/login@main
           with:
-            keyvault_name: ${{ inputs.keyvault_name }}
-            secret_names: ${{ inputs.secret_names }}
+            keyvault_name: ${{ inputs.keyvault_name || vars.KEYVAULT_NAME }}
+            keyvault_subscription: ${{ inputs.keyvault_subscription || vars.KEYVAULT_SUBSCRIPTION || inputs.aks_subscription || vars.AKS_SUBSCRIPTION }}
+            auth_method: ${{ inputs.auth_method || vars.AUTH_METHOD || 'msi' }}
+            msi_id_secret_name: ${{ inputs.msi_id_secret_name }}
+            client_id_secret_name: ${{ inputs.client_id_secret_name }}
+            client_secret_secret_name: ${{ inputs.client_secret_secret_name }}
+            tenant_id_secret_name: ${{ inputs.tenant_id_secret_name }}
+            azure_subscription: ${{ inputs.aks_subscription || vars.AKS_SUBSCRIPTION }}
 
         - name: Deploy to AKS
           shell: bash
           env:
+            AKS_NAME: ${{ inputs.aks_name || vars.AKS_NAME }}
+            AKS_RESOURCE_GROUP: ${{ inputs.aks_resource_group || vars.AKS_RESOURCE_GROUP }}
+            AKS_SUBSCRIPTION: ${{ inputs.aks_subscription || vars.AKS_SUBSCRIPTION }}
+            AKS_NAMESPACE: ${{ inputs.aks_namespace || vars.AKS_NAMESPACE }}
             KUSTOMIZE_PATH: ${{ inputs.kustomize_path }}
+            IMAGE_REFERENCE: ${{ inputs.image_reference }}
+            CONTAINER_NAME: ${{ inputs.container_name || vars.CONTAINER_NAME }}
+            DEPLOYMENT_NAME: ${{ inputs.deployment_name || vars.DEPLOYMENT_NAME }}
+            KUBECONFIG: ${{ runner.temp }}/aks-kubeconfig-${{ github.run_id }}
           run: |
             set -euo pipefail
-            kubectl apply -k "$KUSTOMIZE_PATH"
+            az aks get-credentials \
+              --resource-group "$AKS_RESOURCE_GROUP" \
+              --name "$AKS_NAME" \
+              --subscription "$AKS_SUBSCRIPTION" \
+              --overwrite-existing
+            kubectl apply --namespace "$AKS_NAMESPACE" -k "$KUSTOMIZE_PATH"
+            if [[ -n "$IMAGE_REFERENCE" ]]; then
+              kubectl set image --namespace "$AKS_NAMESPACE" \
+                "deployment/$DEPLOYMENT_NAME" \
+                "$CONTAINER_NAME=$IMAGE_REFERENCE"
+              if ! kubectl rollout status --namespace "$AKS_NAMESPACE" \
+                "deployment/$DEPLOYMENT_NAME" --timeout=5m; then
+                kubectl rollout undo --namespace "$AKS_NAMESPACE" "deployment/$DEPLOYMENT_NAME"
+                echo "Deployment rollout failed; the previous revision was restored." >&2
+                exit 1
+              fi
+            fi
+
+        - name: Clear Azure CLI session
+          if: always()
+          shell: bash
+          env:
+            KUBECONFIG: ${{ runner.temp }}/aks-kubeconfig-${{ github.run_id }}
+          run: |
+            set -euo pipefail
+            az account clear
+            rm -f "$KUBECONFIG"

@@ -1,18 +1,44 @@
 name: Login to Azure using MSI / Service Principal
-description: Login to Azure using MSI or Service Principal credentials
+description: Authenticate directly or bootstrap with runner MSI and read target credentials from Key Vault
 inputs:
   msi_id:
     required: false
-    description: Managed identity client ID. Takes precedence over service principal credentials.
+    description: Managed identity client ID for direct MSI login when Key Vault is not used
   client_id:
     required: false
-    description: Service principal client ID
+    description: Service principal client ID for direct login when Key Vault is not used
   client_secret:
     required: false
-    description: Service principal client secret
+    description: Service principal client secret for direct login when Key Vault is not used
   tenant_id:
     required: false
-    description: Azure tenant ID for service principal login
+    description: Azure tenant ID for direct service principal login
+  keyvault_name:
+    required: false
+    description: Key Vault to read the target Azure login credentials from
+  keyvault_subscription:
+    required: false
+    description: Subscription containing the Key Vault; defaults to azure_subscription
+  auth_method:
+    required: false
+    default: msi
+    description: Target login method when reading credentials from Key Vault (msi or service_principal)
+  msi_id_secret_name:
+    required: false
+    default: MSI_ID
+    description: Key Vault secret name containing the user-assigned managed identity client ID
+  client_id_secret_name:
+    required: false
+    default: AZURE_CLIENT_ID
+    description: Key Vault secret name containing the service principal client ID
+  client_secret_secret_name:
+    required: false
+    default: AZURE_CLIENT_SECRET
+    description: Key Vault secret name containing the service principal client secret
+  tenant_id_secret_name:
+    required: false
+    default: AZURE_TENANT_ID
+    description: Key Vault secret name containing the service principal tenant ID
   azure_subscription:
     required: false
     description: Azure subscription to select after login
@@ -22,14 +48,81 @@ runs:
     - name: Login
       shell: bash
       run: |
-        if [ -n "$MSI_ID" ]; then
-          az login --identity --client-id "$MSI_ID" --allow-no-subscriptions
+        set -euo pipefail
+
+        if [ -n "$KEYVAULT_NAME" ]; then
+          az login --identity --allow-no-subscriptions --output none
+
+          bootstrap_subscription="$KEYVAULT_SUBSCRIPTION"
+          if [ -z "$bootstrap_subscription" ]; then
+            bootstrap_subscription="$AZURE_SUBSCRIPTION"
+          fi
+          if [ -n "$bootstrap_subscription" ]; then
+            az account set --subscription "$bootstrap_subscription"
+          fi
+
+          case "$AUTH_METHOD" in
+            msi)
+              if [ -z "$MSI_ID_SECRET_NAME" ]; then
+                echo "msi_id_secret_name is required for MSI login from Key Vault." >&2
+                exit 1
+              fi
+              MSI_ID=$(az keyvault secret show \
+                --vault-name "$KEYVAULT_NAME" \
+                --name "$MSI_ID_SECRET_NAME" \
+                --query value -o tsv)
+              if [ -z "$MSI_ID" ]; then
+                echo "Key Vault secret '$MSI_ID_SECRET_NAME' did not contain an MSI client ID." >&2
+                exit 1
+              fi
+              az account clear
+              az login --identity --client-id "$MSI_ID" --allow-no-subscriptions --output none
+              ;;
+            service_principal)
+              if [ -z "$CLIENT_ID_SECRET_NAME" ] || [ -z "$CLIENT_SECRET_SECRET_NAME" ] || [ -z "$TENANT_ID_SECRET_NAME" ]; then
+                echo "Client ID, client secret, and tenant ID secret names are required for service principal login." >&2
+                exit 1
+              fi
+              AZURE_CLIENT_ID=$(az keyvault secret show \
+                --vault-name "$KEYVAULT_NAME" \
+                --name "$CLIENT_ID_SECRET_NAME" \
+                --query value -o tsv)
+              AZURE_CLIENT_SECRET=$(az keyvault secret show \
+                --vault-name "$KEYVAULT_NAME" \
+                --name "$CLIENT_SECRET_SECRET_NAME" \
+                --query value -o tsv)
+              AZURE_TENANT_ID=$(az keyvault secret show \
+                --vault-name "$KEYVAULT_NAME" \
+                --name "$TENANT_ID_SECRET_NAME" \
+                --query value -o tsv)
+              if [ -z "$AZURE_CLIENT_ID" ] || [ -z "$AZURE_CLIENT_SECRET" ] || [ -z "$AZURE_TENANT_ID" ]; then
+                echo "One or more service principal credentials fetched from Key Vault were empty." >&2
+                exit 1
+              fi
+              echo "::add-mask::$AZURE_CLIENT_SECRET"
+              az account clear
+              az login --service-principal \
+                --username "$AZURE_CLIENT_ID" \
+                --password "$AZURE_CLIENT_SECRET" \
+                --tenant "$AZURE_TENANT_ID" \
+                --allow-no-subscriptions \
+                --output none
+              ;;
+            *)
+              echo "auth_method must be 'msi' or 'service_principal'." >&2
+              exit 1
+              ;;
+          esac
+        elif [ -n "$MSI_ID" ]; then
+          az login --identity --client-id "$MSI_ID" --allow-no-subscriptions --output none
         elif [ -n "$AZURE_CLIENT_ID" ] && [ -n "$AZURE_CLIENT_SECRET" ] && [ -n "$AZURE_TENANT_ID" ]; then
+          echo "::add-mask::$AZURE_CLIENT_SECRET"
           az login --service-principal \
             --username "$AZURE_CLIENT_ID" \
             --password "$AZURE_CLIENT_SECRET" \
             --tenant "$AZURE_TENANT_ID" \
-            --allow-no-subscriptions
+            --allow-no-subscriptions \
+            --output none
         elif [ -n "$AZURE_CLIENT_ID" ] || [ -n "$AZURE_CLIENT_SECRET" ] || [ -n "$AZURE_TENANT_ID" ]; then
           echo "Service principal login requires client_id, client_secret, and tenant_id." >&2
           exit 1
@@ -49,4 +142,11 @@ runs:
         AZURE_CLIENT_ID: ${{ inputs.client_id }}
         AZURE_CLIENT_SECRET: ${{ inputs.client_secret }}
         AZURE_TENANT_ID: ${{ inputs.tenant_id }}
+        KEYVAULT_NAME: ${{ inputs.keyvault_name }}
+        KEYVAULT_SUBSCRIPTION: ${{ inputs.keyvault_subscription }}
+        AUTH_METHOD: ${{ inputs.auth_method }}
+        MSI_ID_SECRET_NAME: ${{ inputs.msi_id_secret_name }}
+        CLIENT_ID_SECRET_NAME: ${{ inputs.client_id_secret_name }}
+        CLIENT_SECRET_SECRET_NAME: ${{ inputs.client_secret_secret_name }}
+        TENANT_ID_SECRET_NAME: ${{ inputs.tenant_id_secret_name }}
         AZURE_SUBSCRIPTION: ${{ inputs.azure_subscription }}

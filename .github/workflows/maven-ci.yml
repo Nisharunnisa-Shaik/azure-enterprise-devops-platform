@@ -1,13 +1,13 @@
 name: Building Java Applications
-description: Workflow created for Java Applications
 
-on: 
+on:
   workflow_call:
     inputs:
       repo_name:
-       required: true
-       type: string
+        required: true
+        type: string
       branch_name:
+        description: Branch or commit SHA to build
         required: true
         type: string
       sonar_host_url:
@@ -16,30 +16,83 @@ on:
       sonar_project_key:
         required: true
         type: string
+      acr_name:
+        description: Azure Container Registry name without the azurecr.io suffix
+        required: true
+        type: string
+      image_name:
+        description: Image repository name
+        required: true
+        type: string
+      acr_subscription:
+        description: Subscription containing the target ACR
+        required: true
+        type: string
+      keyvault_name:
+        description: Key Vault containing build identity credentials
+        required: true
+        type: string
+      keyvault_subscription:
+        required: false
+        type: string
+      auth_method:
+        required: false
+        type: string
+        default: msi
+      dockerfile_path:
+        required: false
+        type: string
+        default: Dockerfile
+      build_context:
+        required: false
+        type: string
+        default: .
+      msi_id_secret_name:
+        required: false
+        type: string
+        default: MSI_ID
+      client_id_secret_name:
+        required: false
+        type: string
+        default: AZURE_CLIENT_ID
+      client_secret_secret_name:
+        required: false
+        type: string
+        default: AZURE_CLIENT_SECRET
+      tenant_id_secret_name:
+        required: false
+        type: string
+        default: AZURE_TENANT_ID
     secrets:
       sonar_token:
         required: true
+    outputs:
+      image_digest:
+        description: Digest of the image published to ACR
+        value: ${{ jobs.docker_build.outputs.image_digest }}
+      image_reference:
+        description: Fully qualified immutable ACR image reference
+        value: ${{ jobs.docker_build.outputs.image_reference }}
+
 jobs:
   java_build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           repository: ${{ inputs.repo_name }}
           ref: ${{ inputs.branch_name }}
 
       - name: Install Dependencies
-        uses: azure-enterprise-devops-platform/.github/actions/setup/maven-install@main
+        uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/setup/maven-install@main
         with:
           java_version: "21"
           maven_version: "3.9.16"
 
       - name: Build and test Java application
         shell: bash
-        run: |
-          set -euo pipefail
-          mvn clean install
+        run: mvn --batch-mode clean install
 
       - name: Analyze with SonarQube
         shell: bash
@@ -49,33 +102,41 @@ jobs:
           SONAR_TOKEN: ${{ secrets.sonar_token }}
         run: |
           set -euo pipefail
-          mvn org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
+          mvn --batch-mode org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
             -Dsonar.host.url="$SONAR_HOST_URL" \
             -Dsonar.projectKey="$SONAR_PROJECT_KEY"
 
-      - name: Upload Build Artifacts
-        uses: actions/upload-artifact@v3
-        with:
-          name: build-artifacts
-
   docker_build:
-    runs-on: ubuntu-latest
+    runs-on: selfhosted-ubuntu
     needs: java_build
+    outputs:
+      image_digest: ${{ steps.publish_image.outputs.image_digest }}
+      image_reference: ${{ steps.publish_image.outputs.image_reference }}
     steps:
-      - name: Download Build Artifacts
-        uses: actions/download-artifact@v3
+      - name: Checkout Code
+        uses: actions/checkout@v4
         with:
-          name: build-artifacts
+          repository: ${{ inputs.repo_name }}
+          ref: ${{ inputs.branch_name }}
 
       - name: Login to Azure
-        uses: azure-enterprise-devops-platform/.github/actions/azure/login@main 
+        uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/azure/login@main
         with:
-          msi_id: ${{ secrets.MSI_ID }}
-          azure_subscription: ${{ secrets.AZURE_SUBSCRIPTION }}
-          
-      - name: Publish Artifacts to ACR using ACR Build
-        uses: azure-enterprise-devops-platform/.github/actions/acr/build@main
+          keyvault_name: ${{ inputs.keyvault_name }}
+          keyvault_subscription: ${{ inputs.keyvault_subscription || inputs.acr_subscription }}
+          auth_method: ${{ inputs.auth_method }}
+          msi_id_secret_name: ${{ inputs.msi_id_secret_name }}
+          client_id_secret_name: ${{ inputs.client_id_secret_name }}
+          client_secret_secret_name: ${{ inputs.client_secret_secret_name }}
+          tenant_id_secret_name: ${{ inputs.tenant_id_secret_name }}
+          azure_subscription: ${{ inputs.acr_subscription }}
+
+      - name: Build and push image to ACR
+        id: publish_image
+        uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/azure/acr/build@main
         with:
-          dockerfile_path: "Dockerfile"
-          acr_name: "myacrname"
-          image_tags: "myimage:latest"
+          dockerfile_path: ${{ inputs.dockerfile_path }}
+          build_context: ${{ inputs.build_context }}
+          acr_name: ${{ inputs.acr_name }}
+          image_name: ${{ inputs.image_name }}
+          image_tag: ${{ github.sha }}

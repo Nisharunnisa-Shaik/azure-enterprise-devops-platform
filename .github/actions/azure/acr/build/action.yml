@@ -1,33 +1,64 @@
-name: 'Publish Image to ACR using ACR Build'
-description: 'Build and publish container images to Azure Container Registry using ACR Build'
+name: Build and push image using ACR Tasks
+description: Build a Dockerfile with Azure Container Registry Tasks and return its immutable digest
 inputs:
   dockerfile_path:
-    description: 'Path to the Dockerfile'
+    description: Dockerfile path relative to the build context
     required: true
-    type: string
+  build_context:
+    description: Build context directory
+    required: false
+    default: .
   acr_name:
-    description: 'Name of the non-production ACR'
-    type: string
-  image_tags:
-    description: 'Tag or Array of Tags for the images to build'
+    description: Azure Container Registry name without the azurecr.io suffix
+    required: true
+  image_name:
+    description: Image repository name
+    required: true
+  image_tag:
+    description: Immutable tag used for this build
     required: true
 outputs:
-  image_url:
-    description: 'URL of the published image in ACR'
-    value: ${{ steps.publish_acr.outputs.image_url }}
+  image_digest:
+    description: Digest of the image pushed to ACR
+    value: ${{ steps.publish_acr.outputs.image_digest }}
+  image_reference:
+    description: Fully qualified immutable ACR image reference
+    value: ${{ steps.publish_acr.outputs.image_reference }}
 runs:
-  using: "composite"
+  using: composite
   steps:
-   - name: Publish Artifacts to ACR using ACR Build
-     id: publish_acr
-     shell: bash
-     run: |
-      set -e
-      acr_name=${{ inputs.acr_name }}
-      az acr build --registry ${acr_name} -t ${image_tag} .
-      image_list+=$( echo -e "${acr_name}.azurecr.io/${image_tag}" )
-      image_url="${acr_name}.azurecr.io/${image_tag}"
-      done
-      echo "App images has successfully built pushed to the ACR,image info: ${image_list}"
-      # Set the output variable for the Published URL
-      echo "image_url=${image_url}" >> $GITHUB_OUTPUT
+    - name: Build and push image to ACR
+      id: publish_acr
+      shell: bash
+      env:
+        DOCKERFILE_PATH: ${{ inputs.dockerfile_path }}
+        BUILD_CONTEXT: ${{ inputs.build_context }}
+        ACR_NAME: ${{ inputs.acr_name }}
+        IMAGE_NAME: ${{ inputs.image_name }}
+        IMAGE_TAG: ${{ inputs.image_tag }}
+      run: |
+        set -euo pipefail
+
+        if [[ ! -f "$BUILD_CONTEXT/$DOCKERFILE_PATH" ]]; then
+          echo "Dockerfile not found: $BUILD_CONTEXT/$DOCKERFILE_PATH" >&2
+          exit 1
+        fi
+
+        az acr build \
+          --registry "$ACR_NAME" \
+          --file "$DOCKERFILE_PATH" \
+          --image "$IMAGE_NAME:$IMAGE_TAG" \
+          "$BUILD_CONTEXT"
+
+        image_digest=$(az acr repository show \
+          --name "$ACR_NAME" \
+          --image "$IMAGE_NAME:$IMAGE_TAG" \
+          --query digest \
+          --output tsv)
+        if [[ -z "$image_digest" ]]; then
+          echo "ACR did not return a digest for $IMAGE_NAME:$IMAGE_TAG." >&2
+          exit 1
+        fi
+
+        echo "image_digest=$image_digest" >> "$GITHUB_OUTPUT"
+        echo "image_reference=$ACR_NAME.azurecr.io/$IMAGE_NAME@$image_digest" >> "$GITHUB_OUTPUT"
