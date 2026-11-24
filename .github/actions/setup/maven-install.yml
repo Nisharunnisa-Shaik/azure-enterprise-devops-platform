@@ -1,0 +1,30 @@
+name: Install Maven
+description: Composite action created for Installing Maven
+inputs:
+  java_version:
+    required: true
+    default: "21"
+    description: "Provide Java version that needs to be isntalled"
+  maven_version:
+    required: true
+    default: "3.9.16"
+    description: "Provide Java version that needs to be isntalled"
+runs:
+  using: composite
+  steps:
+    - name: Install Java
+      shell: bash
+      run: |
+          set -euo pipefail
+
+          maven_version="3.9.13"
+          maven_archive="apache-maven-${maven_version}-bin.tar.gz"
+          maven_url="https://archive.apache.org/dist/maven/maven-3/${maven_version}/binaries/${maven_archive}"
+          
+          curl --fail --location --silent --show-error "$maven_url" --output "/tmp/${maven_archive}"
+          
+          sudo mkdir -p /opt/maven
+          sudo tar -xzf "/tmp/${maven_archive}" --directory /opt/maven --strip-components=1
+          sudo ln -sfn /opt/maven/bin/mvn /usr/local/bin/mvn
+          
+          mvn --version
