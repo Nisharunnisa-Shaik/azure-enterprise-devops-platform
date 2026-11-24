@@ -8,7 +8,7 @@ inputs:
   maven_version:
     required: true
     default: "3.9.16"
-    description: "Provide Java version that needs to be isntalled"
+    description: "Provide Maven version that needs to be installed"
 runs:
   using: composite
   steps:
@@ -17,7 +17,17 @@ runs:
       run: |
           set -euo pipefail
 
-          maven_version="3.9.13"
+          java_version="${{ inputs.java_version }}"
+          sudo apt-get update
+          sudo apt-get install -y openjdk-${java_version}-jdk
+          java -version
+    - name: Install Maven
+
+      shell: bash
+      run: |
+          set -euo pipefail
+
+          maven_version="${{ inputs.maven_version }}"
           maven_archive="apache-maven-${maven_version}-bin.tar.gz"
           maven_url="https://archive.apache.org/dist/maven/maven-3/${maven_version}/binaries/${maven_archive}"
           

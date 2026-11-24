@@ -1,0 +1,66 @@
+name: Workflow for AKS Deployment
+on:
+  workflow_call:
+    inputs:
+      repo_name:
+        required: true
+        type: string
+      branch_name:
+        required: true
+        type: string
+      keyvault_name:
+        required: true
+        type: string
+      secret_names:
+        required: true
+        type: string
+      msi_id:
+        required: false
+        type: string
+      azure_subscription:
+        required: false
+        type: string
+      kustomize_path:
+        required: false
+        type: string
+        default: .
+        description: Path to the Kustomize overlay or base in the checked-out repository
+    secrets:
+      azure_client_id:
+        required: false
+      azure_client_secret:
+        required: false
+      azure_tenant_id:
+        required: false
+  jobs:
+    aks_deploy:
+      runs-on: ubuntu-latest
+      steps:
+        - name: Checkout Code
+          uses: actions/checkout@v3
+          with:
+            repository: ${{ inputs.repo_name }}
+            ref: ${{ inputs.branch_name }}
+        
+        - name: Login to Azure
+          uses: azure-enterprise-devops-platform/.github/actions/azure/login@main 
+          with:
+            msi_id: ${{ inputs.msi_id }}
+            client_id: ${{ secrets.azure_client_id }}
+            client_secret: ${{ secrets.azure_client_secret }}
+            tenant_id: ${{ secrets.azure_tenant_id }}
+            azure_subscription: ${{ inputs.azure_subscription }}
+
+        - name: Fetch Secrets from Azure Key Vault
+          uses: azure-enterprise-devops-platform/.github/actions/azure/akv/secrets@main
+          with:
+            keyvault_name: ${{ inputs.keyvault_name }}
+            secret_names: ${{ inputs.secret_names }}
+
+        - name: Deploy to AKS
+          shell: bash
+          env:
+            KUSTOMIZE_PATH: ${{ inputs.kustomize_path }}
+          run: |
+            set -euo pipefail
+            kubectl apply -k "$KUSTOMIZE_PATH"

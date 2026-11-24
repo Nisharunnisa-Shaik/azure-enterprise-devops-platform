@@ -1,0 +1,52 @@
+name: Login to Azure using MSI / Service Principal
+description: Login to Azure using MSI or Service Principal credentials
+inputs:
+  msi_id:
+    required: false
+    description: Managed identity client ID. Takes precedence over service principal credentials.
+  client_id:
+    required: false
+    description: Service principal client ID
+  client_secret:
+    required: false
+    description: Service principal client secret
+  tenant_id:
+    required: false
+    description: Azure tenant ID for service principal login
+  azure_subscription:
+    required: false
+    description: Azure subscription to select after login
+runs:
+  using: "composite"
+  steps:
+    - name: Login
+      shell: bash
+      run: |
+        if [ -n "$MSI_ID" ]; then
+          az login --identity --client-id "$MSI_ID" --allow-no-subscriptions
+        elif [ -n "$AZURE_CLIENT_ID" ] && [ -n "$AZURE_CLIENT_SECRET" ] && [ -n "$AZURE_TENANT_ID" ]; then
+          az login --service-principal \
+            --username "$AZURE_CLIENT_ID" \
+            --password "$AZURE_CLIENT_SECRET" \
+            --tenant "$AZURE_TENANT_ID" \
+            --allow-no-subscriptions
+        elif [ -n "$AZURE_CLIENT_ID" ] || [ -n "$AZURE_CLIENT_SECRET" ] || [ -n "$AZURE_TENANT_ID" ]; then
+          echo "Service principal login requires client_id, client_secret, and tenant_id." >&2
+          exit 1
+        else
+          echo "Provide msi_id or all service principal credentials to log in to Azure." >&2
+          exit 1
+        fi
+
+        if [ -n "$AZURE_SUBSCRIPTION" ]; then
+          echo "Setting Azure subscription to $AZURE_SUBSCRIPTION"
+          az account set --subscription "$AZURE_SUBSCRIPTION"
+        else
+          echo "No subscription provided, skipping az account set."
+        fi
+      env:
+        MSI_ID: ${{ inputs.msi_id }}
+        AZURE_CLIENT_ID: ${{ inputs.client_id }}
+        AZURE_CLIENT_SECRET: ${{ inputs.client_secret }}
+        AZURE_TENANT_ID: ${{ inputs.tenant_id }}
+        AZURE_SUBSCRIPTION: ${{ inputs.azure_subscription }}

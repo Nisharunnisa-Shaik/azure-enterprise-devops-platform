@@ -1,0 +1,81 @@
+name: Building Java Applications
+description: Workflow created for Java Applications
+
+on: 
+  workflow_call:
+    inputs:
+      repo_name:
+       required: true
+       type: string
+      branch_name:
+        required: true
+        type: string
+      sonar_host_url:
+        required: true
+        type: string
+      sonar_project_key:
+        required: true
+        type: string
+    secrets:
+      sonar_token:
+        required: true
+jobs:
+  java_build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+        with:
+          repository: ${{ inputs.repo_name }}
+          ref: ${{ inputs.branch_name }}
+
+      - name: Install Dependencies
+        uses: azure-enterprise-devops-platform/.github/actions/setup/maven-install@main
+        with:
+          java_version: "21"
+          maven_version: "3.9.16"
+
+      - name: Build and test Java application
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn clean install
+
+      - name: Analyze with SonarQube
+        shell: bash
+        env:
+          SONAR_HOST_URL: ${{ inputs.sonar_host_url }}
+          SONAR_PROJECT_KEY: ${{ inputs.sonar_project_key }}
+          SONAR_TOKEN: ${{ secrets.sonar_token }}
+        run: |
+          set -euo pipefail
+          mvn org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
+            -Dsonar.host.url="$SONAR_HOST_URL" \
+            -Dsonar.projectKey="$SONAR_PROJECT_KEY"
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: build-artifacts
+
+  docker_build:
+    runs-on: ubuntu-latest
+    needs: java_build
+    steps:
+      - name: Download Build Artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: build-artifacts
+
+      - name: Login to Azure
+        uses: azure-enterprise-devops-platform/.github/actions/azure/login@main 
+        with:
+          msi_id: ${{ secrets.MSI_ID }}
+          azure_subscription: ${{ secrets.AZURE_SUBSCRIPTION }}
+          
+      - name: Publish Artifacts to ACR using ACR Build
+        uses: azure-enterprise-devops-platform/.github/actions/acr/build@main
+        with:
+          dockerfile_path: "Dockerfile"
+          acr_name: "myacrname"
+          image_tags: "myimage:latest"

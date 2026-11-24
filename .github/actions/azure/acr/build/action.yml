@@ -1,0 +1,33 @@
+name: 'Publish Image to ACR using ACR Build'
+description: 'Build and publish container images to Azure Container Registry using ACR Build'
+inputs:
+  dockerfile_path:
+    description: 'Path to the Dockerfile'
+    required: true
+    type: string
+  acr_name:
+    description: 'Name of the non-production ACR'
+    type: string
+  image_tags:
+    description: 'Tag or Array of Tags for the images to build'
+    required: true
+outputs:
+  image_url:
+    description: 'URL of the published image in ACR'
+    value: ${{ steps.publish_acr.outputs.image_url }}
+runs:
+  using: "composite"
+  steps:
+   - name: Publish Artifacts to ACR using ACR Build
+     id: publish_acr
+     shell: bash
+     run: |
+      set -e
+      acr_name=${{ inputs.acr_name }}
+      az acr build --registry ${acr_name} -t ${image_tag} .
+      image_list+=$( echo -e "${acr_name}.azurecr.io/${image_tag}" )
+      image_url="${acr_name}.azurecr.io/${image_tag}"
+      done
+      echo "App images has successfully built pushed to the ACR,image info: ${image_list}"
+      # Set the output variable for the Published URL
+      echo "image_url=${image_url}" >> $GITHUB_OUTPUT
