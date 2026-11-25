@@ -1,70 +1,74 @@
 # Azure Enterprise DevOps Platform
 
-Reusable GitHub Actions for building Java container images, scanning them with Prisma Cloud Compute, promoting immutable ACR digests, and deploying to AKS with Kustomize. This README describes the files and setup in this repository; the broader target design is in the [Azure DevSecOps Platform Assessment](./Azure_DevSecOps_Platform_Assessment.md), with execution steps in the [Migration and Adoption Plan](./MIGRATION_AND_ADOPTION_PLAN.md).
+## 1. Executive summary
 
-## Repository contents
+This submission proposes an Azure-based delivery platform using GitHub Actions, Azure Container Registry (ACR), Azure Kubernetes Service (AKS), and managed identities. The repository contains reusable CI/CD workflows and supporting actions. It is a scaffold, not a production-validated platform: environment configuration and Azure permissions still need to be completed and tested.
 
-```text
-.github/
-  actions/
-    azure/
-      acr/build/             Build and push an image to ACR
-      acr/promote/           Import and verify an image by digest
-      aks/deploy/            Apply Kustomize and update the AKS workload
-      aks/smoke-test/        Check the endpoint; optionally roll back
-      aks/cleanup/           Clear Azure CLI state and per-run kubeconfig
-      aks/validate-emergency/ Validate incident, emergency mode, and rollback digest
-      login/                 Azure CLI login using MSI or service principal
-    config/load-environment/ Read and validate application deployment YAML
-    scan/                    Run Prisma twistcli and save JSON results
-    setup/maven-install/     Install Java and Maven
-  workflows/
-    maven-ci.yml             Maven tests, SonarQube, ACR build, and Prisma scan
-    aks-deploy.yml           Config-driven AKS deployment and optional ACR promotion
-```
+## 2. Architecture
 
-The application caller workflows and configuration are in the sibling [`maven-application`](../maven-application/) folder. Workflow templates call composite actions; application workflows do not contain inline deployment commands.
+![Azure DevSecOps platform architecture](diagrams/devops-architecture.png)
 
-## Workflow behavior
+The design and component descriptions are in [Section 4 of the assessment](Azure_DevSecOps_Platform_Assessment.md#4-platform-architecture).
 
-### Maven CI
+## 3. Assessment report
 
-[`maven-ci.yml`](.github/workflows/maven-ci.yml) checks out the requested application ref, runs Maven tests and SonarQube, builds the image in the Dev ACR, scans it with Prisma `twistcli`, and returns an immutable image reference and digest. The scan JSON is uploaded as a workflow artifact. A failed build, quality gate, or scan blocks downstream deployment.
+- [Assessment PDF](Azure_DevSecOps_Platform_Assessment.pdf)
+- [Assessment source (Markdown)](Azure_DevSecOps_Platform_Assessment.md)
 
-The application caller ([`ci-cd.yml`](../maven-application/.github/workflows/ci-cd.yml)) uses repository variables `SONAR_HOST_URL`, `SONAR_PROJECT_KEY`, `ACR_NAME`, `ACR_IMAGE_NAME`, `ACR_SUBSCRIPTION_ID`, `BUILD_KEYVAULT_NAME`, `PRISMA_CONSOLE_URL`, and `PRISMA_TWISTCLI_URL`. `BUILD_KEYVAULT_SUBSCRIPTION` and `BUILD_AUTH_METHOD` are optional; auth defaults to MSI. Set `SONAR_TOKEN` as a GitHub secret. The build identity needs push access to the Dev ACR; Prisma credentials are read from Key Vault.
+## 4. CI/CD implementation
 
-### AKS deployment
+The application workflows call reusable templates in this repository:
 
-[`aks-deploy.yml`](.github/workflows/aks-deploy.yml) is called with an application ref and GitHub Environment. It loads non-secret settings from `configuration/maven-config.yaml`, logs in using the configured identity, optionally imports an image into the target ACR by digest, applies the selected Kustomize overlay, updates the workload, and runs an optional smoke test with rollback on failure.
+| Workflow | Purpose |
+| --- | --- |
+| [Maven CI template](.github/workflows/maven-ci.yml) | Maven tests, SonarQube, ACR image build, and Prisma scan |
+| [AKS deployment template](.github/workflows/aks-deploy.yml) | Load environment config, promote an image by digest, deploy with Kustomize, and optionally smoke-test |
+| [Standard application workflow](../maven-application/.github/workflows/ci-cd.yml) | Run CI, then promote through Dev, UAT, and Prod |
+| [Emergency workflow](../maven-application/.github/workflows/emergency-deploy.yml) | Roll back to an existing image or build, scan, and deploy a fix |
 
-Fill in the Dev, UAT, and Prod ACR names, resource groups, subscriptions, and login servers in the application config. Also provide each environment's AKS, Key Vault, namespace, workload/container names, Kustomize path, and smoke-test URL. Keep secret values in Key Vault.
+Composite action details are under [`.github/actions`](.github/actions). Application settings are in the sibling [`maven-application`](../maven-application/) repository.
 
-## Release flows
+## 5. Artifact promotion
 
-- **Standard release:** CI builds and scans once in Dev; deploy and validate in Dev; import the same digest to UAT and validate; wait for `prod` approval; then import the UAT digest to Prod and deploy.
-- **Emergency rollback:** dispatch [`emergency-deploy.yml`](../maven-application/.github/workflows/emergency-deploy.yml) from `main`, provide an incident ID, select `rollback`, and supply a known-good digest already in the Prod ACR. The protected Prod Environment approval and production smoke test still apply.
-- **Emergency fix:** dispatch from `main` with an incident ID, select `build_fix`, and leave the digest input empty. Maven CI tests, builds, and scans the fix; the workflow deploys it to Dev and smoke-tests it, then the protected Prod approval gates importing that digest from Dev to Prod and deploying it. This expedited path skips UAT; the normal release still requires UAT validation. There is no emergency gate-bypass input.
+![Standard CD promotion from Dev through UAT to Prod](diagrams/cd-promotion-flow.png)
 
-Configure `dev`, `uat`, and `prod` Environments in the application repository before running deployment workflows. For `prod`, configure required reviewers, prevent self-review, restrict deployment refs to the approved branches/tags, and disable administrator bypass when a no-bypass policy is required.
+CI builds and scans one image. The release flow promotes its digest from Dev to UAT and then to Prod; it does not rebuild the image between environments. See [Section 7 of the assessment](Azure_DevSecOps_Platform_Assessment.md#7-artifact-promotion-strategy).
 
-### Full-flow demo (simulation only)
+## 6. Governance and security
 
-To demonstrate job order without Azure resources, open **Actions → Maven CI and Environment Promotion → Run workflow**, select the branch, and set `demo_mode` to `true`. For an emergency demonstration, dispatch [`emergency-deploy.yml`](../maven-application/.github/workflows/emergency-deploy.yml) from `main`, enter an incident ID, choose `rollback` or `build_fix`, and set `demo_mode` to `true`. A rollback demo may leave `image_reference` empty; a build-fix demo must leave it empty.
+- [Repository controls guide](REPOSITORY_CONTROLS_AS_CODE.md)
+- [Roles, controls, and Environment design](Azure_DevSecOps_Platform_Assessment.md#5-platform-design)
+- [Production Environment evidence and status](Azure_DevSecOps_Platform_Assessment.md#45-production-environment-evidence)
 
-Simulation uses GitHub-hosted runners and synthetic `.invalid` image references. It echoes build, scan, promotion, deployment, and smoke-test steps, and skips checkout, Maven, SonarQube, Prisma, Key Vault, Azure login, ACR, AKS, and endpoint calls. GitHub Environment protections, including a configured production approval, still apply. The run is only an orchestration demo: it creates no image, deploys nothing, and is not evidence that CI checks or an Azure deployment passed. With `demo_mode` left false, missing required CI configuration fails an explicit preflight check rather than silently switching to simulation. Push-triggered runs always use the real workflow path.
+The design calls for protected branches, code-owner reviews, least-privilege managed identities, and production approval. Confirm the settings in the application repository before relying on them.
 
-## Azure access needed
+## 7. Migration and adoption
 
-- The runner's system-assigned identity bootstraps Key Vault access.
-- The build MSI needs image-push access to Dev ACR.
-- The UAT MSI needs ACR import/read permissions on Dev and UAT.
-- The Prod MSI needs ACR import/read permissions on UAT and Prod for standard releases, and Dev and Prod for emergency fixes.
-- Deployment identities receive only their target AKS permissions. Each AKS kubelet identity needs pull access to its environment's ACR.
+See the [Migration and Adoption Plan](MIGRATION_AND_ADOPTION_PLAN.md) for the discovery steps, five-application pilot, phased waves, acceptance checklist, and evidence to retain. The proposed rollout has not yet been carried out.
 
-For human repository permissions, environment evidence, permission rationale, and the complete platform design, see the [assessment](./Azure_DevSecOps_Platform_Assessment.md) and [Repository Controls as Code](./REPOSITORY_CONTROLS_AS_CODE.md).
+## 8. Evidence
 
-## Prerequisites and current limits
+### Available
 
-The trusted `selfhosted-ubuntu` runner needs Azure CLI, `kubectl`, Ruby with the standard YAML/Psych library, Docker access for Prisma scanning, and network access to AKS, ACR, Key Vault, and Prisma Console. The application checkout currently contains scaffold/empty Maven, Dockerfile, and Kustomize files, and its environment-specific ACR/workload/URL values are placeholders; complete them before a real run.
+- [Environment deployment branch/tag rules screenshot](docs/evidence/prod-deployment-branches.png) — evidence for the `Prod Approval` Environment; this is not a repository branch-ruleset screenshot.
+- [Environment approval settings screenshot](docs/evidence/prod-approval-settings.png) — shows reviewers and prevent-self-review for `Prod Approval`; administrator bypass is enabled in the capture.
+- [Simulation workflow run](https://github.com/Nisharunnisa-Shaik/azure-enterprise-maven-application/actions/runs/45573909623) — demonstrates workflow orchestration only. It did not build an image or contact Azure.
 
-Prisma container scanning is implemented. An IaC scanner is not available, and SBOM generation and image signing are not implemented; do not treat these as passing workflow gates. No live Azure deployment has been validated from this workspace.
+**Production approval configuration needs correction:** the deployment workflow targets an Environment named `prod`, while the reviewer configuration is on `Prod Approval`. At the time of this review, `prod` had no protection rules. Configure and verify reviewers on the exact `prod` Environment before treating approval as an active control.
+
+### Not yet available
+
+- A successful real CI/CD or emergency deployment run with test, scan, digest, approval, and deployment evidence.
+- Repository branch-ruleset screenshots and verified Azure role assignments.
+- Azure Monitor or Application Insights rollout and rollback evidence.
+
+## 9. Known limitations
+
+- Application configuration and Maven, Dockerfile, and Kustomize scaffold files still need completion before a real run.
+- Prisma image scanning is in the workflow; IaC scanning, SBOM generation, and image signing are not implemented.
+- AKS weighted-canary and App Service slot deployment automation are not implemented.
+- The emergency workflow documents PIM use, but does not activate or enforce time-limited PIM access.
+- Simulation mode echoes workflow stages and uses synthetic `.invalid` image references. It is not deployment or security-control evidence.
+- Reusable workflows and actions currently use mutable `@main` references; pin reviewed revisions before production use.
+
+For setup variables, runner prerequisites, and workflow inputs, see the [assessment](Azure_DevSecOps_Platform_Assessment.md) and [repository controls guide](REPOSITORY_CONTROLS_AS_CODE.md).

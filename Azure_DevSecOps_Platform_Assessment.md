@@ -158,7 +158,7 @@ GitHub Environment required reviewers can have `Read` access; only one configure
 
 **Figure 7. Maven CI build and image scanning flow**
 
-Secret scanning/push protection and Dependabot alerts are enabled in each source application repository through GitHub Advanced Security/repository security settings; they are not stages in this CI workflow. A Dependency Review action may be configured as a separate required pull-request check. The Prisma `twistcli` action scans the image in the development ACR and uploads its JSON result as a workflow artifact. CI-required checks fail closed: an image is not promoted if a mandatory test, code-quality, or image-security gate fails. Approved exceptions must have an owner, justification, compensating control, and expiry.
+Enable secret scanning, push protection, and Dependabot alerts in each source application repository; they are GitHub settings, not steps in this CI workflow. Their status still needs repository-level verification. Dependency Review is not configured in the current workflow. The Prisma `twistcli` action scans the development ACR image and uploads its JSON result. Keep promotion blocked when a required test, SonarQube gate, or image scan fails. Record any exception with an owner, reason, compensating control, and expiry.
 
 ### 5.3 Standard CD promotion and deployment pipeline
 
@@ -166,9 +166,9 @@ Secret scanning/push protection and Dependabot alerts are enabled in each source
 
 **Figure 8. Standard CD promotion and deployment flow**
 
-Read the arrows from left to right. The image is built once; each ACR import copies the same digest, not a rebuilt image. The UAT MSI performs the Dev-to-UAT import. After UAT validation, the required production reviewer approval gates the Prod MSI's UAT-to-Prod import and deployment. Monitoring retains a known-good digest for rollback.
+Read the arrows from left to right. The image is built once and promoted by digest: UAT imports from Dev after Dev validation; Prod imports from UAT after UAT validation and approval. Keep the last-known-good digest for rollback.
 
-The CI build and scan produce one immutable development-ACR digest. Standard promotion is a release/CD stage after validation: the UAT MSI imports Dev to UAT, then the production approval gates the production MSI importing UAT to Prod. The emergency `build_fix` path instead smoke-tests the image in Dev, then the protected production job imports the same digest directly from Dev to Prod. Each import is by digest and must be verified before deployment. For same-tenant ACR imports, grant the destination environment MSI **Container Registry Data Importer and Data Reader** on both the source and destination registries; the production MSI therefore needs source access to both UAT (standard releases) and Dev (emergency fixes). Keep the build MSI limited to pushing to Dev. Each AKS kubelet identity separately receives pull access to its own ACR.
+For same-tenant ACR imports, grant the destination MSI **Container Registry Data Importer and Data Reader** on the source and destination registries. The Prod MSI needs access to UAT for standard releases and Dev for emergency fixes. Limit the build MSI to pushing to Dev; each AKS kubelet identity needs pull access only to its own ACR. The emergency `build_fix` flow is described in Section 9.
 
 ### 5.4 Reusable workflow contract
 
@@ -178,6 +178,8 @@ The CI build and scan produce one immutable development-ACR digest. Standard pro
 - Pin reusable workflow and third-party action references to reviewed immutable revisions.
 - Allow application teams to extend tests and configuration without disabling required controls.
 - Deprecate breaking inputs through a published migration window.
+
+The current callers and action references use the mutable `@main` ref. Pin them to reviewed commit SHAs before treating the templates as a production control.
 
 ## 6. Controls as code
 
@@ -207,7 +209,7 @@ Create environments separately in each application repository under **Settings â
 - In `prod` â†’ **Deployment protection rules**, add designated approval-only reviewers (they need only `Read` repository access) and enable **Prevent self-review**. At least one configured reviewer must approve the deployment. Disable **Allow administrators to bypass configured protection rules** when the policy requires no bypass. Restrict deployment branches/tags to the approved release refs; remove unused wildcard rules if production is intended to be `main`-only.
 - The GitHub Environment is the approval boundary, not the source of AKS settings. Do not put Azure credentials in GitHub Environment secrets. The runner's system-assigned MSI bootstraps Key Vault access; target identity credentials remain in Key Vault.
 
-The normal application workflow calls the reusable AKS workflow for `prod` after UAT validation. That reusable job declares the `prod` GitHub Environment, so GitHub pauses it for the configured approval. The emergency rollback path uses the same approval. For a newly built emergency fix, the workflow first runs CI, deploys the scanned digest to Dev, and smoke-tests it; the protected `prod` job then imports the same digest from Dev to the production ACR before deployment. This expedited path skips UAT; the normal release flow still requires UAT validation. Neither emergency path bypasses production reviewers. Current Environment screenshots are Figures 5 and 6 in Section 4.5.
+The reusable deployment job declares the target GitHub Environment. Production deployments therefore wait for that Environment's configured approval. The emergency path uses the same Prod gate and is detailed in Section 9. The current Environment screenshots are Figures 5 and 6 in Section 4.5; the administrator-bypass setting shown in Figure 6 still needs to be disabled.
 
 ### 6.2 Security controls
 
@@ -238,15 +240,9 @@ No long-lived cloud credentials should be committed to repositories or printed i
 
 ## 7. Artifact promotion strategy
 
-Build and scan an image once in the development ACR from the approved commit. Deploy it to development AKS and wait for developer validation. Then import the same image digest into the UAT ACR and deploy it to UAT AKS. After UAT validation and production approval, import that digest into the production ACR and deploy it to production AKS. Never rebuild the application image between stages. Verify each destination digest matches the source digest and record the import and deployment evidence.
+Build and scan once in Dev. After Dev validation, import the same digest into UAT; after UAT validation and production approval, import it into Prod. The reusable ACR promotion action verifies that the destination digest matches the source. The emergency `build_fix` path, described in Section 9, imports from Dev to Prod after Dev smoke testing and Prod approval.
 
-The standard release sequence is shown in Figure 8: CI creates one digest, and the same artifact is validated and promoted through each environment.
-
-Use separate managed identities and least-privilege ACR permissions for each import/deploy boundary. Capture the source and destination registry names, commit SHA, image digest, Prisma JSON report, SBOM/signature references, workflow run, approvals, and deployment outcome for every promotion.
-
-The application caller now promotes the built digest from Dev to UAT after Dev validation, then from UAT to Prod after UAT validation and production approval. The reusable AKS deployment workflow calls the ACR import action and verifies the destination digest before deployment. Remaining operational prerequisites are populated ACR configuration, environment-specific MSI values, role assignments, and a successful end-to-end run.
-
-The emergency `build_fix` mode follows a separate expedited path: CI builds and scans from the selected `main` commit, the digest is deployed and smoke-tested in Dev, then production approval gates the production MSI importing that digest from Dev to Prod. This emergency path skips UAT; grant the production MSI the required import/read role on Dev as well as Prod. The normal release workflow continues to use UAT as the production import source.
+For each promotion, retain the commit, source and destination registry, image digest, scan report, workflow run, approval, and deployment result. SBOM and signature references are future evidence, not current outputs. Before a live run, populate the environment configuration and verify MSI role assignments. The callers currently reference reusable workflows at `@main`; pin reviewed revisions before production use.
 
 ## 8. Progressive delivery runbook
 
@@ -323,7 +319,7 @@ This design supports both recovery from a bad release and remediation of a new d
 
 ## 10. Metrics and reporting
 
-Join GitHub deployment records with Azure Monitor and incident data using service, environment, commit SHA, and image digest.
+The proposed reporting model joins GitHub deployment records with Azure Monitor and incident data using service, environment, commit SHA, and image digest. The repository does not yet include a collector or dashboard for this data.
 
 ### DORA metrics
 
@@ -414,7 +410,7 @@ Test policy changes in a representative repository before broad enforcement. Val
 
 ## 15. Conclusion
 
-The proposed platform gives forty engineering teams a secure, scalable delivery path while preserving application-team ownership. Central reusable workflows, ephemeral runners, managed identities, immutable artifact promotion, progressive delivery, and auditable repository controls establish consistent standards without requiring a big-bang pipeline rewrite.
+This repository contains reusable Maven and AKS workflows, digest-based ACR promotion, and an emergency deployment path. It is not production-ready: environment values and Azure role assignments still need verification, progressive delivery automation and several security controls are missing, and a real end-to-end run has not been captured. The migration plan keeps existing pipelines in place while teams onboard in waves.
 
 ## 16. References and AI disclosure
 
