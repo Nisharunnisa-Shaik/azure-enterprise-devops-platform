@@ -1,0 +1,19 @@
+name: Clean up AKS deployment session
+description: Clear Azure CLI state and remove the per-run kubeconfig
+inputs:
+  kubeconfig_path:
+    description: Per-run KUBECONFIG path to remove
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Clear Azure CLI session and remove kubeconfig
+      shell: bash
+      env:
+        KUBECONFIG: ${{ inputs.kubeconfig_path }}
+      run: |
+        set -euo pipefail
+        account_clear_status=0
+        az account clear || account_clear_status=$?
+        rm -f "$KUBECONFIG"
+        exit "$account_clear_status"

@@ -1,0 +1,99 @@
+name: Run HTTP smoke test
+description: Retry an HTTP smoke-test URL until it succeeds or the retry limit is reached
+inputs:
+  environment_name:
+    description: Environment name shown in the workflow log
+    required: true
+  smoke_test_url:
+    description: Health or smoke-test endpoint
+    required: true
+  attempts:
+    description: Maximum number of requests
+    required: false
+    default: "6"
+  retry_delay_seconds:
+    description: Seconds to wait between requests
+    required: false
+    default: "10"
+  rollback_on_failure:
+    description: Roll back a Kubernetes Deployment if all requests fail
+    required: false
+    default: "false"
+  aks_namespace:
+    description: Kubernetes namespace for the Deployment to roll back
+    required: false
+    default: ""
+  deployment_name:
+    description: Kubernetes Deployment to roll back
+    required: false
+    default: ""
+  kubeconfig_path:
+    description: KUBECONFIG path to use when rolling back
+    required: false
+    default: ""
+  rollout_timeout:
+    description: Maximum time to wait for the restored revision
+    required: false
+    default: 5m
+runs:
+  using: composite
+  steps:
+    - name: Check endpoint
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment_name }}
+        SMOKE_TEST_URL: ${{ inputs.smoke_test_url }}
+        ATTEMPTS: ${{ inputs.attempts }}
+        RETRY_DELAY_SECONDS: ${{ inputs.retry_delay_seconds }}
+        ROLLBACK_ON_FAILURE: ${{ inputs.rollback_on_failure }}
+        AKS_NAMESPACE: ${{ inputs.aks_namespace }}
+        DEPLOYMENT_NAME: ${{ inputs.deployment_name }}
+        KUBECONFIG: ${{ inputs.kubeconfig_path }}
+        ROLLOUT_TIMEOUT: ${{ inputs.rollout_timeout }}
+      run: |
+        set -euo pipefail
+        if [[ -z "$SMOKE_TEST_URL" ]]; then
+          echo "A smoke-test URL is required for environment '$ENVIRONMENT_NAME'." >&2
+          exit 1
+        fi
+        if [[ ! "$ATTEMPTS" =~ ^[1-9][0-9]*$ || ! "$RETRY_DELAY_SECONDS" =~ ^[0-9]+$ ]]; then
+          echo "attempts and retry_delay_seconds must be non-negative integers; attempts must be greater than zero." >&2
+          exit 1
+        fi
+        if [[ "$ROLLBACK_ON_FAILURE" != "true" && "$ROLLBACK_ON_FAILURE" != "false" ]]; then
+          echo "rollback_on_failure must be true or false." >&2
+          exit 1
+        fi
+        if [[ "$ROLLBACK_ON_FAILURE" == "true" ]]; then
+          for name in AKS_NAMESPACE DEPLOYMENT_NAME KUBECONFIG; do
+            if [[ -z "${!name}" ]]; then
+              echo "$name is required when rollback_on_failure is enabled." >&2
+              exit 1
+            fi
+          done
+        fi
+
+        for ((attempt = 1; attempt <= ATTEMPTS; attempt++)); do
+          if curl --fail --silent --show-error --output /dev/null --max-time 10 "$SMOKE_TEST_URL"; then
+            echo "$ENVIRONMENT_NAME smoke test passed."
+            exit 0
+          fi
+          if [[ "$attempt" -lt "$ATTEMPTS" ]]; then
+            sleep "$RETRY_DELAY_SECONDS"
+          fi
+        done
+
+        echo "$ENVIRONMENT_NAME smoke test failed after $ATTEMPTS attempts." >&2
+        if [[ "$ROLLBACK_ON_FAILURE" == "true" ]]; then
+          echo "Attempting to restore the previous Deployment revision." >&2
+          deployment="deployment/$DEPLOYMENT_NAME"
+          if ! kubectl rollout undo --namespace "$AKS_NAMESPACE" "$deployment"; then
+            echo "Rollback also failed; manual intervention is required." >&2
+            exit 1
+          fi
+          if ! kubectl rollout status --namespace "$AKS_NAMESPACE" "$deployment" --timeout="$ROLLOUT_TIMEOUT"; then
+            echo "Previous Deployment revision did not become healthy; manual intervention is required." >&2
+            exit 1
+          fi
+        fi
+        exit 1

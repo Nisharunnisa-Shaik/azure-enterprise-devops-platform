@@ -189,11 +189,21 @@ For detailed repository implementation guidance, see [Repository Controls as Cod
 | Workflow ownership | CODEOWNERS review for workflow, action, and policy changes | Code-owner review event |
 | Least-privilege Actions token | Read-only `GITHUB_TOKEN` baseline; grant permissions only to the job that needs them | Workflow YAML and run permissions |
 | Reusable workflow governance | Pin to reviewed revisions; use explicit inputs/secrets; prevent mandatory checks from being skipped | Workflow reference and run evidence |
-| Environment protection | Require production approvers and scope deployment variables/secrets by environment | Deployment history and approval records |
+| Environment protection | Require production approvers, prevent self-review, and restrict deployment branches | Deployment history and approval records |
 | Repository security posture | Enable GHAS secret scanning/push protection and Dependabot alerts in each source application repository; these are not Maven CI jobs | Repository security settings and GHAS/Dependabot alerts |
 | CI security gates | Require tests, SonarQube, container/IaC checks, and any separately configured code or dependency review jobs | Required status checks and scan reports |
 
 Branch patterns should be agreed with teams; a baseline is `main`, `develop`, `release/*`, and `hotfix/*`. Only make checks mandatory after confirming they run reliably for all relevant pull requests.
+
+#### GitHub Environment setup and production approvals
+
+Create environments separately in each application repository under **Settings → Environments → New environment**. Create `dev`, `uat`, and `prod` before enabling deployment workflows; an environment used before protection is configured may not pause for approval.
+
+- Store non-secret AKS, Key Vault, namespace, authentication mode, Key Vault secret names, ACR login server, workload names, Kustomize overlay, and smoke-test URL for each environment in the application repository's `configuration/maven-config.yaml`. The config action reads the selected environment; leave secret values in Key Vault.
+- In `prod` → **Deployment protection rules**, add designated release/on-call reviewers and enable **Prevent self-review**. At least one configured reviewer must approve the deployment. Restrict deployment branches and tags to the protected `main` branch.
+- The GitHub Environment is the approval boundary, not the source of AKS settings. Do not put Azure credentials in GitHub Environment secrets. The runner's system-assigned MSI bootstraps Key Vault access; target identity credentials remain in Key Vault.
+
+The normal application workflow calls the reusable AKS workflow for `prod` after UAT validation. That reusable job declares the `prod` GitHub Environment, so GitHub pauses it for the configured approval. The manual emergency workflow uses that same `prod` Environment and approval rule; it does not bypass the production reviewers.
 
 ### 6.2 Security controls
 
@@ -273,6 +283,8 @@ Stop promotion and restore the stable version when a hard threshold is breached.
 
 Emergency changes are for active incidents or material security risks, not schedule pressure.
 
+In the application repository, `.github/workflows/emergency-deploy.yml` provides a manual production deployment path. It requires an incident/change ID and an immutable image digest, only accepts dispatches from `main`, and calls the centrally maintained AKS deployment workflow. The selected image must already be scanned, approved, and present in the production ACR; the reusable deployment workflow checks it against `azure.acr.prod.login_server` in `configuration/maven-config.yaml`. This workflow does not build or promote images. After rollout, it runs the production `azure.aks.prod.smoke_test_url`; failure triggers a rollback attempt and fails the run. The protected `prod` Environment still requires reviewer approval.
+
 ```mermaid
 flowchart TD
     A[Incident declared] --> B[Incident commander and service owner approve]
@@ -289,6 +301,7 @@ flowchart TD
 ### Required controls
 
 - Record the incident/change ID, severity, service, impact, incident commander, and approvers.
+- Dispatch the emergency workflow from `main` with the incident/change ID and already-approved production image digest; retain its run URL as incident evidence.
 - Activate least-privilege Microsoft Entra PIM access with MFA and justification; maximum activation duration is **4 hours**.
 - Retain minimum pipeline gates: build/focused tests, image scan/signature verification, and smoke test. Keep application-repository GHAS secret scanning/push protection and Dependabot alerts enabled as independent repository controls, not as CI stages.
 - Deploy one immutable digest to the smallest affected scope; monitor health and retain a rollback option.
@@ -329,6 +342,10 @@ Publish formulas and time windows. Count emergency and failed releases consisten
 | **3. Pilot adoption** | Onboard five representative applications; validate build, deployment, security checks, and rollback | Pilot release and rollback complete with evidence |
 | **4. Migration waves** | Wave 1: 10 low-complexity apps; Wave 2: 15 medium-complexity apps; Wave 3: 15 critical production apps | Each wave meets agreed service-level onboarding criteria |
 | **5. Continuous improvement** | Review DORA/control metrics, resolve exceptions, and improve templates | No unowned exceptions; adoption and platform SLO targets are met |
+
+![DevSecOps platform migration and adoption roadmap](diagrams/migration-adoption-plan.png)
+
+**Figure 5. DevSecOps platform migration and adoption roadmap**
 
 Project teams receive an onboarding guide, deployment runbook, troubleshooting guide, and office-hours support. Keep legacy pipelines available during the transition; onboard one service at a time rather than requiring a big-bang rewrite.
 
@@ -384,4 +401,4 @@ The proposed platform gives forty engineering teams a secure, scalable delivery 
 
 ### AI assistance disclosure
 
-Generative AI assisted with document structure, wording, and diagram drafting. The platform design, assumptions, thresholds, implementation status, and references should be reviewed by the responsible engineering and security owners.
+Generative AI assisted with document structure, wording, and diagram drafting.

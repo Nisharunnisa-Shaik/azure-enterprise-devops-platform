@@ -1,0 +1,164 @@
+name: Load environment deployment configuration
+description: Read a non-secret environment configuration from the checked-out application repository
+inputs:
+  config_file:
+    description: YAML configuration path relative to the workspace
+    required: true
+  environment_name:
+    description: Environment key to read from the configuration file
+    required: true
+  image_reference:
+    description: Optional immutable image reference being deployed
+    required: false
+    default: ""
+  require_image_registry_match:
+    description: Require the image to match the selected environment's configured ACR
+    required: false
+    default: "false"
+  require_smoke_test:
+    description: Require a smoke-test URL for the selected environment
+    required: false
+    default: "false"
+outputs:
+  aks_name:
+    value: ${{ steps.load.outputs.aks_name }}
+  aks_resource_group:
+    value: ${{ steps.load.outputs.aks_resource_group }}
+  aks_subscription:
+    value: ${{ steps.load.outputs.aks_subscription }}
+  aks_namespace:
+    value: ${{ steps.load.outputs.aks_namespace }}
+  keyvault_name:
+    value: ${{ steps.load.outputs.keyvault_name }}
+  keyvault_subscription:
+    value: ${{ steps.load.outputs.keyvault_subscription }}
+  auth_method:
+    value: ${{ steps.load.outputs.auth_method }}
+  msi_id_secret_name:
+    value: ${{ steps.load.outputs.msi_id_secret_name }}
+  client_id_secret_name:
+    value: ${{ steps.load.outputs.client_id_secret_name }}
+  client_secret_secret_name:
+    value: ${{ steps.load.outputs.client_secret_secret_name }}
+  tenant_id_secret_name:
+    value: ${{ steps.load.outputs.tenant_id_secret_name }}
+  acr_login_server:
+    value: ${{ steps.load.outputs.acr_login_server }}
+  container_name:
+    value: ${{ steps.load.outputs.container_name }}
+  deployment_name:
+    value: ${{ steps.load.outputs.deployment_name }}
+  kustomize_path:
+    value: ${{ steps.load.outputs.kustomize_path }}
+  smoke_test_url:
+    value: ${{ steps.load.outputs.smoke_test_url }}
+runs:
+  using: composite
+  steps:
+    - id: load
+      name: Read and validate deployment configuration
+      shell: bash
+      env:
+        CONFIG_FILE: ${{ inputs.config_file }}
+        ENVIRONMENT_NAME: ${{ inputs.environment_name }}
+        IMAGE_REFERENCE: ${{ inputs.image_reference }}
+        REQUIRE_IMAGE_REGISTRY_MATCH: ${{ inputs.require_image_registry_match }}
+        REQUIRE_SMOKE_TEST: ${{ inputs.require_smoke_test }}
+      run: |
+        set -euo pipefail
+        if ! command -v ruby >/dev/null 2>&1; then
+          echo "Ruby is required to parse the YAML deployment config." >&2
+          exit 1
+        fi
+        ruby - "$CONFIG_FILE" "$ENVIRONMENT_NAME" <<'RUBY'
+        require "pathname"
+        require "yaml"
+
+        config_path = ARGV.fetch(0)
+        environment_name = ARGV.fetch(1)
+
+        begin
+          root = YAML.safe_load(File.read(config_path, encoding: "UTF-8"), aliases: false)
+        rescue Errno::ENOENT, Errno::EACCES, Psych::Exception => error
+          abort "Cannot read deployment configuration '#{config_path}': #{error.message}"
+        end
+
+        abort "Deployment configuration must contain an 'azure' mapping." unless root.is_a?(Hash) && root["azure"].is_a?(Hash)
+
+        azure = root.fetch("azure")
+        aks = azure.dig("aks", environment_name)
+        keyvault = azure.dig("keyvault", environment_name)
+        acr = azure.dig("acr", environment_name)
+        secrets = azure["secrets"]
+        abort "Environment '#{environment_name}' is missing from the AKS or Key Vault configuration." unless aks.is_a?(Hash) && keyvault.is_a?(Hash)
+        abort "The Azure secrets configuration must be a mapping." unless secrets.is_a?(Hash)
+        acr = {} unless acr.is_a?(Hash)
+
+        values = {
+          "aks_name" => aks["name"],
+          "aks_resource_group" => aks["resource_group"],
+          "aks_subscription" => aks["subscription"],
+          "aks_namespace" => aks["namespace"],
+          "keyvault_name" => keyvault["name"],
+          "keyvault_subscription" => keyvault["subscription"] || "",
+          "auth_method" => azure.fetch("auth_method", "msi"),
+          "msi_id_secret_name" => secrets.fetch("msi_id_secret_name", "MSI_ID"),
+          "client_id_secret_name" => secrets.fetch("client_id_secret_name", "AZURE_CLIENT_ID"),
+          "client_secret_secret_name" => secrets.fetch("client_secret_secret_name", "AZURE_CLIENT_SECRET"),
+          "tenant_id_secret_name" => secrets.fetch("tenant_id_secret_name", "AZURE_TENANT_ID"),
+          "acr_login_server" => acr.fetch("login_server", ""),
+          "container_name" => aks["container_name"],
+          "deployment_name" => aks["deployment_name"],
+          "kustomize_path" => aks["kustomize_path"],
+          "smoke_test_url" => aks.fetch("smoke_test_url", "")
+        }
+
+        required = %w[
+          aks_name aks_resource_group aks_subscription aks_namespace keyvault_name
+          container_name deployment_name kustomize_path
+          msi_id_secret_name client_id_secret_name client_secret_secret_name tenant_id_secret_name
+        ]
+
+        values.each do |name, value|
+          abort "Configuration value '#{environment_name}.#{name}' must be a string." unless value.is_a?(String)
+          abort "Configuration value '#{environment_name}.#{name}' must be a single line." if value.include?("\n") || value.include?("\r")
+          values[name] = value.strip
+        end
+
+        required.each do |name|
+          abort "Configuration value '#{environment_name}.#{name}' is required." if values[name].empty?
+        end
+        abort "'azure.auth_method' must be 'msi' or 'service_principal'." unless %w[msi service_principal].include?(values["auth_method"])
+
+        kustomize_path = Pathname.new(values["kustomize_path"])
+        if kustomize_path.absolute? || kustomize_path.each_filename.any? { |part| part == ".." }
+          abort "'#{environment_name}.kustomize_path' must stay inside the checked-out repository."
+        end
+        abort "Kustomize path '#{values["kustomize_path"]}' does not exist in the checked-out repository." unless kustomize_path.directory?
+
+        acr_login_server = values["acr_login_server"]
+        if !acr_login_server.empty? && !/\A[a-z0-9][a-z0-9-]*\.azurecr\.io\z/.match?(acr_login_server)
+          abort "'#{environment_name}.acr.login_server' must be an ACR login server hostname."
+        end
+
+        image_reference = ENV.fetch("IMAGE_REFERENCE", "")
+        unless image_reference.empty? || /\A.+@sha256:[a-f0-9]{64}\z/i.match?(image_reference)
+          abort "image_reference must be pinned to a SHA-256 digest."
+        end
+
+        if ENV.fetch("REQUIRE_IMAGE_REGISTRY_MATCH", "false") == "true"
+          abort "image_reference is required when registry matching is enabled." if image_reference.empty?
+          abort "'#{environment_name}.acr.login_server' is required when registry matching is enabled." if acr_login_server.empty?
+          unless image_reference.start_with?("#{acr_login_server}/")
+            abort "image_reference must use the '#{environment_name}' ACR login server configured in '#{config_path}'."
+          end
+        end
+
+        if ENV.fetch("REQUIRE_SMOKE_TEST", "false") == "true" && values["smoke_test_url"].empty?
+          abort "Configuration value '#{environment_name}.smoke_test_url' is required for this deployment."
+        end
+
+        File.open(ENV.fetch("GITHUB_OUTPUT"), "a") do |outputs|
+          values.each { |name, value| outputs.puts("#{name}=#{value}") }
+        end
+        RUBY

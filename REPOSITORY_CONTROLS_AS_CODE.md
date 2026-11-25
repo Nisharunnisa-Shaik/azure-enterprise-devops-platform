@@ -12,7 +12,7 @@ Some policy is stored in the repository; other policy is configured in GitHub se
 | Workflow permissions and checks | `.github/workflows/*.yml` | Limits each job's token and defines validation/deployment steps |
 | Branch rulesets | Repository or organization settings; optionally managed with Terraform/API | Enforces pull requests, code-owner review, required checks, and restrictions on updates/bypass |
 | GitHub Actions policy | Repository/organization Actions settings | Limits which actions can run and sets default `GITHUB_TOKEN` permissions |
-| Environments | Repository settings plus workflow `environment:` declarations | Scopes deployment secrets/variables and gates deployments with approvals or wait timers |
+| Environments | Repository settings plus workflow `environment:` declarations | Gates deployments with approvals or wait timers |
 | Azure identity/RBAC | Microsoft Entra ID and Azure resource configuration | Limits the resources each build or deployment job can access |
 
 Use repository settings as code where possible, for example by managing rulesets and Actions settings with the GitHub Terraform provider or an approved GitHub API automation. Keep that configuration in a separately protected infrastructure repository so a change to this repository cannot silently weaken its own protections.
@@ -85,12 +85,26 @@ jobs:
     environment: prod
     runs-on: selfhosted-ubuntu
     steps:
+      - uses: actions/checkout@<reviewed-40-character-commit-sha>
+        with:
+          persist-credentials: false
+      - name: Load deployment configuration
+        id: deployment_config
+        uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/config/load-environment@<reviewed-40-character-commit-sha>
+        with:
+          config_file: configuration/maven-config.yaml
+          environment_name: prod
       - name: Authenticate to Azure using MSI
         uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/azure/login@<reviewed-40-character-commit-sha>
         with:
-          keyvault_name: ${{ vars.KEYVAULT_NAME }}
-          azure_subscription: ${{ vars.AKS_SUBSCRIPTION }}
-          auth_method: msi
+          keyvault_name: ${{ steps.deployment_config.outputs.keyvault_name }}
+          keyvault_subscription: ${{ steps.deployment_config.outputs.keyvault_subscription }}
+          azure_subscription: ${{ steps.deployment_config.outputs.aks_subscription }}
+          auth_method: ${{ steps.deployment_config.outputs.auth_method }}
+          msi_id_secret_name: ${{ steps.deployment_config.outputs.msi_id_secret_name }}
+          client_id_secret_name: ${{ steps.deployment_config.outputs.client_id_secret_name }}
+          client_secret_secret_name: ${{ steps.deployment_config.outputs.client_secret_secret_name }}
+          tenant_id_secret_name: ${{ steps.deployment_config.outputs.tenant_id_secret_name }}
       - run: ./scripts/deploy.sh
 ```
 
@@ -149,7 +163,7 @@ Declare GitHub Environments in deployment jobs and configure environment protect
 
 Use a distinct ACR for each environment. Grant the build MSI `AcrPush` only on the development ACR. A promotion identity should have read access to the source ACR and permission to import into only the next environment's ACR; each AKS environment should pull from its own registry.
 
-Store environment-specific configuration in GitHub Environment variables and secrets, not in workflow source. Put long-lived application secrets in Key Vault rather than workflow YAML. Only jobs that declare the corresponding `environment:` should receive that environment's protected secrets.
+Store non-secret per-environment deployment settings in the application repository's `configuration/maven-config.yaml` and load them with the centrally maintained config action. Keep GitHub Environments for deployment protection and approvals. Put credentials and application secrets in Key Vault; never place secret values in the config file or workflow YAML. Only jobs that declare the corresponding `environment:` receive its protection rules and environment secrets.
 
 For Azure access using MSI:
 

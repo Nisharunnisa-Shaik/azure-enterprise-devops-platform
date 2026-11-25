@@ -1,0 +1,42 @@
+name: Validate emergency deployment request
+description: Validate an emergency production deployment request and record its incident ID
+inputs:
+  incident_id:
+    description: Incident or emergency change record ID
+    required: true
+  image_reference:
+    description: Production ACR image pinned by SHA-256 digest
+    required: true
+  dispatch_ref:
+    description: Git ref selected for workflow_dispatch
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Validate request
+      shell: bash
+      env:
+        INCIDENT_ID: ${{ inputs.incident_id }}
+        IMAGE_REFERENCE: ${{ inputs.image_reference }}
+        DISPATCH_REF: ${{ inputs.dispatch_ref }}
+      run: |
+        set -euo pipefail
+        if [[ "$DISPATCH_REF" != "refs/heads/main" ]]; then
+          echo "Emergency deployments must be dispatched from main." >&2
+          exit 1
+        fi
+        if [[ ! "$INCIDENT_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,63}$ ]]; then
+          echo "incident_id must be a non-empty incident/change reference using letters, numbers, '.', '_', '/', or '-'." >&2
+          exit 1
+        fi
+        if [[ ! "$IMAGE_REFERENCE" =~ ^[a-z0-9][a-z0-9.-]*\.azurecr\.io/[a-z0-9][a-z0-9._/-]*@sha256:[a-f0-9]{64}$ ]]; then
+          echo "image_reference must be a production ACR image pinned to a lowercase SHA-256 digest." >&2
+          exit 1
+        fi
+
+        {
+          printf '## Emergency production deployment request\n\n'
+          printf -- '- Incident/change ID: `%s`\n' "$INCIDENT_ID"
+          printf -- '- Target environment: `prod`\n'
+          printf -- '- Requested image: ACR image pinned to a SHA-256 digest\n'
+        } >> "$GITHUB_STEP_SUMMARY"
