@@ -86,6 +86,8 @@ Prefer GitHub Actions OIDC federation to a Microsoft Entra application or user-a
 
 Implement gates as pull-request checks and promotion checks. A failed mandatory gate blocks merge or deployment; exceptions are explicit, approved, and time limited.
 
+For repository-level implementation details—including `CODEOWNERS`, branch rulesets, Actions permissions, reusable workflow governance, and GitHub Environments—see [Repository Controls as Code](./REPOSITORY_CONTROLS_AS_CODE.md).
+
 | Control | Gate / evidence | Azure or platform-native implementation |
 | --- | --- | --- |
 | Tests and quality | Compile, unit and integration tests; SonarQube quality gate; retain logs and test reports | Existing Maven/Sonar steps are a starting point |
