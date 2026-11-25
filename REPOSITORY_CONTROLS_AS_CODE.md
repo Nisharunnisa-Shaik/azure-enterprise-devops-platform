@@ -161,7 +161,7 @@ Declare GitHub Environments in deployment jobs and configure environment protect
 | `uat` | Automatic or service-owner approval, after development validation | Non-production UAT resources only |
 | `prod` | Required reviewers, prevent self-review, and successful UAT evidence | Production resources only |
 
-Use a distinct ACR for each environment. Grant the build MSI `AcrPush` only on the development ACR. A promotion identity should have read access to the source ACR and permission to import into only the next environment's ACR; each AKS environment should pull from its own registry.
+Use a distinct ACR for each environment. Grant the build MSI `AcrPush` only on the development ACR for image push and pull. For `az acr import`, assign the promotion MSI the built-in **Container Registry Data Importer and Data Reader** role on the source and destination ACRs. This is one role with a combined name, not separate importer and data-reader roles; `AcrPush` does not authorize the import operation. Scope each assignment to only the registries required for the next promotion. Each AKS environment should pull from its own registry.
 
 Store non-secret per-environment deployment settings in the application repository's `configuration/maven-config.yaml` and load them with the centrally maintained config action. Keep GitHub Environments for deployment protection and approvals. Put credentials and application secrets in Key Vault; never place secret values in the config file or workflow YAML. Only jobs that declare the corresponding `environment:` receive its protection rules and environment secrets.
 

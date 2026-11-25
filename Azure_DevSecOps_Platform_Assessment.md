@@ -168,7 +168,7 @@ Enable secret scanning, push protection, and Dependabot alerts in each source ap
 
 Read the arrows from left to right. The image is built once and promoted by digest: UAT imports from Dev after Dev validation; Prod imports from UAT after UAT validation and approval. Keep the last-known-good digest for rollback.
 
-For same-tenant ACR imports, grant the destination MSI **Container Registry Data Importer and Data Reader** on the source and destination registries. The Prod MSI needs access to UAT for standard releases and Dev for emergency fixes. Limit the build MSI to pushing to Dev; each AKS kubelet identity needs pull access only to its own ACR. The emergency `build_fix` flow is described in Section 9.
+For same-tenant imports using `az acr import`, grant the promotion MSI the built-in **Container Registry Data Importer and Data Reader** role on both the source and destination registries. This is the single role's full name; there is no separate **Container Registry Data Reader** role. Use **AcrPush** for the build MSI on Dev when it needs image push and pull; it does not replace the import role. The Prod MSI needs access to UAT for standard releases and Dev for emergency fixes. Each AKS kubelet identity needs pull access only to its own ACR. The emergency `build_fix` flow is described in Section 9.
 
 ### 5.4 Reusable workflow contract
 
