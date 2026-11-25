@@ -36,6 +36,11 @@ on:
         required: false
         type: boolean
         default: false
+      demo_mode:
+        description: Echo deployment steps without accessing Azure, ACR, or AKS
+        required: false
+        type: boolean
+        default: false
     outputs:
       image_reference:
         description: Immutable image reference in the target environment's ACR
@@ -43,18 +48,35 @@ on:
 jobs:
   aks_deploy:
     environment: ${{ inputs.environment_name }}
-    runs-on: selfhosted-ubuntu
+    runs-on: ${{ inputs.demo_mode && 'ubuntu-latest' || 'selfhosted-ubuntu' }}
     outputs:
-      image_reference: ${{ steps.promote_image.outputs.image_reference || inputs.image_reference }}
+      image_reference: ${{ steps.simulate_deployment.outputs.image_reference || steps.promote_image.outputs.image_reference || inputs.image_reference }}
     steps:
+      - name: SIMULATION ONLY - Show source checkout
+        if: ${{ inputs.demo_mode }}
+        env:
+          REPO_NAME: ${{ inputs.repo_name }}
+          BRANCH_NAME: ${{ inputs.branch_name }}
+        shell: bash
+        run: echo "Would check out $REPO_NAME at $BRANCH_NAME."
+
       - name: Checkout Code
+        if: ${{ !inputs.demo_mode }}
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.repo_name }}
           ref: ${{ inputs.branch_name }}
 
+      - name: SIMULATION ONLY - Show deployment configuration load
+        if: ${{ inputs.demo_mode }}
+        env:
+          ENVIRONMENT_NAME: ${{ inputs.environment_name }}
+        shell: bash
+        run: echo "Would load the $ENVIRONMENT_NAME deployment configuration."
+
       - name: Load deployment configuration
         id: deployment_config
+        if: ${{ !inputs.demo_mode }}
         uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/config/load-environment@main
         with:
           config_file: ${{ inputs.deployment_config_file }}
@@ -64,7 +86,15 @@ jobs:
           require_image_registry_match: ${{ inputs.require_image_registry_match && inputs.source_environment == '' }}
           require_smoke_test: ${{ inputs.require_smoke_test }}
 
+      - name: SIMULATION ONLY - Show Azure login
+        if: ${{ inputs.demo_mode }}
+        env:
+          ENVIRONMENT_NAME: ${{ inputs.environment_name }}
+        shell: bash
+        run: echo "Would authenticate to Azure with the $ENVIRONMENT_NAME managed identity."
+
       - name: Login to Azure
+        if: ${{ !inputs.demo_mode }}
         uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/azure/login@main
         with:
           keyvault_name: ${{ steps.deployment_config.outputs.keyvault_name }}
@@ -76,9 +106,40 @@ jobs:
           tenant_id_secret_name: ${{ steps.deployment_config.outputs.tenant_id_secret_name }}
           azure_subscription: ${{ steps.deployment_config.outputs.aks_subscription }}
 
+      - name: SIMULATION ONLY - Show ACR promotion and AKS deployment
+        id: simulate_deployment
+        if: ${{ inputs.demo_mode }}
+        shell: bash
+        env:
+          ENVIRONMENT_NAME: ${{ inputs.environment_name }}
+          SOURCE_ENVIRONMENT: ${{ inputs.source_environment }}
+          IMAGE_REFERENCE: ${{ inputs.image_reference }}
+          REQUIRE_SMOKE_TEST: ${{ inputs.require_smoke_test }}
+        run: |
+          set -euo pipefail
+          echo "::notice::SIMULATION ONLY - no ACR import, AKS update, or Azure API call was made."
+          if [[ -n "$SOURCE_ENVIRONMENT" ]]; then
+            echo "Would import the existing image digest from $SOURCE_ENVIRONMENT into $ENVIRONMENT_NAME."
+          elif [[ -n "$IMAGE_REFERENCE" ]]; then
+            echo "Would deploy the supplied image to $ENVIRONMENT_NAME without importing it."
+          else
+            echo "Would select and deploy a known-good existing image into $ENVIRONMENT_NAME."
+          fi
+          if [[ -n "$IMAGE_REFERENCE" ]]; then
+            echo "A synthetic workflow output will be used; the supplied reference will not be deployed."
+          fi
+          target_digest="sha256:0000000000000000000000000000000000000000000000000000000000000000"
+          target_reference="demo-${ENVIRONMENT_NAME}.invalid/demo-app@${target_digest}"
+          echo "Would apply the environment's Kustomize overlay and update its AKS workload."
+          if [[ "$REQUIRE_SMOKE_TEST" == "true" ]]; then
+            echo "Would run the configured smoke test and roll back if it failed."
+          fi
+          echo "Downstream simulation reference: $target_reference"
+          echo "image_reference=$target_reference" >> "$GITHUB_OUTPUT"
+
       - name: Promote image into target ACR
         id: promote_image
-        if: ${{ inputs.source_environment != '' }}
+        if: ${{ !inputs.demo_mode && inputs.source_environment != '' }}
         uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/azure/acr/promote@main
         with:
           source_image_reference: ${{ inputs.image_reference }}
@@ -89,6 +150,7 @@ jobs:
           target_acr_subscription: ${{ steps.deployment_config.outputs.acr_subscription }}
 
       - name: Deploy to AKS
+        if: ${{ !inputs.demo_mode }}
         uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/azure/aks/deploy@main
         with:
           aks_name: ${{ steps.deployment_config.outputs.aks_name }}
@@ -101,7 +163,7 @@ jobs:
           deployment_name: ${{ steps.deployment_config.outputs.deployment_name }}
 
       - name: Verify deployment with smoke test
-        if: ${{ inputs.require_smoke_test }}
+        if: ${{ !inputs.demo_mode && inputs.require_smoke_test }}
         uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/azure/aks/smoke-test@main
         with:
           environment_name: ${{ inputs.environment_name }}
@@ -112,7 +174,12 @@ jobs:
           kubeconfig_path: ${{ runner.temp }}/aks-kubeconfig-${{ github.run_id }}
 
       - name: Clear Azure CLI session
-        if: always()
+        if: ${{ always() && !inputs.demo_mode }}
         uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/azure/aks/cleanup@main
         with:
           kubeconfig_path: ${{ runner.temp }}/aks-kubeconfig-${{ github.run_id }}
+
+      - name: SIMULATION ONLY - Show cleanup
+        if: ${{ always() && inputs.demo_mode }}
+        shell: bash
+        run: echo "Would clear the Azure CLI session and remove the per-run kubeconfig."

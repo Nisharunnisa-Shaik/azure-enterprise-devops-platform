@@ -10,35 +10,40 @@ on:
         description: Branch or commit SHA to build
         required: true
         type: string
+      demo_mode:
+        description: Echo each build and scan step without accessing build infrastructure
+        required: false
+        type: boolean
+        default: false
       sonar_host_url:
-        required: true
+        required: false
         type: string
       sonar_project_key:
-        required: true
+        required: false
         type: string
       acr_name:
         description: Azure Container Registry name without the azurecr.io suffix
-        required: true
+        required: false
         type: string
       image_name:
         description: Image repository name
-        required: true
+        required: false
         type: string
       acr_subscription:
         description: Subscription containing the target ACR
-        required: true
+        required: false
         type: string
       keyvault_name:
         description: Key Vault containing build identity credentials
-        required: true
+        required: false
         type: string
       prisma_console_url:
         description: HTTPS base URL for Prisma Cloud Compute Console
-        required: true
+        required: false
         type: string
       twistcli_url:
         description: HTTPS URL used to download twistcli from Prisma Console
-        required: true
+        required: false
         type: string
       keyvault_subscription:
         required: false
@@ -81,7 +86,7 @@ on:
         default: PRISMA_PASSWORD
     secrets:
       sonar_token:
-        required: true
+        required: false
     outputs:
       image_digest:
         description: Digest of the image published to ACR
@@ -94,23 +99,78 @@ jobs:
   java_build:
     runs-on: ubuntu-latest
     steps:
+      - name: Validate build configuration
+        if: ${{ !inputs.demo_mode }}
+        shell: bash
+        env:
+          SONAR_HOST_URL: ${{ inputs.sonar_host_url }}
+          SONAR_PROJECT_KEY: ${{ inputs.sonar_project_key }}
+          SONAR_TOKEN: ${{ secrets.sonar_token }}
+          ACR_NAME: ${{ inputs.acr_name }}
+          IMAGE_NAME: ${{ inputs.image_name }}
+          ACR_SUBSCRIPTION: ${{ inputs.acr_subscription }}
+          KEYVAULT_NAME: ${{ inputs.keyvault_name }}
+          PRISMA_CONSOLE_URL: ${{ inputs.prisma_console_url }}
+          TWISTCLI_URL: ${{ inputs.twistcli_url }}
+        run: |
+          set -euo pipefail
+          for name in SONAR_HOST_URL SONAR_PROJECT_KEY SONAR_TOKEN ACR_NAME IMAGE_NAME \
+            ACR_SUBSCRIPTION KEYVAULT_NAME PRISMA_CONSOLE_URL TWISTCLI_URL; do
+            if [[ -z "${!name}" ]]; then
+              echo "Required build configuration is empty: $name" >&2
+              exit 1
+            fi
+          done
+
+      - name: SIMULATION ONLY - Show configuration preflight
+        if: ${{ inputs.demo_mode }}
+        shell: bash
+        run: echo "Would verify SonarQube, ACR, Key Vault, and Prisma settings before a real build."
+
+      - name: SIMULATION ONLY - Show source checkout
+        if: ${{ inputs.demo_mode }}
+        env:
+          REPO_NAME: ${{ inputs.repo_name }}
+          BRANCH_NAME: ${{ inputs.branch_name }}
+        shell: bash
+        run: echo "Would check out $REPO_NAME at $BRANCH_NAME."
+
       - name: Checkout Code
+        if: ${{ !inputs.demo_mode }}
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.repo_name }}
           ref: ${{ inputs.branch_name }}
 
+      - name: SIMULATION ONLY - Show Java and Maven setup
+        if: ${{ inputs.demo_mode }}
+        shell: bash
+        run: echo "Would install Java 21 and Maven 3.9.16."
+
       - name: Install Dependencies
+        if: ${{ !inputs.demo_mode }}
         uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/setup/maven-install@main
         with:
           java_version: "21"
           maven_version: "3.9.16"
 
+      - name: SIMULATION ONLY - Show Maven build and tests
+        if: ${{ inputs.demo_mode }}
+        shell: bash
+        run: echo "Would run mvn --batch-mode clean install."
+
       - name: Build and test Java application
+        if: ${{ !inputs.demo_mode }}
         shell: bash
         run: mvn --batch-mode clean install
 
+      - name: SIMULATION ONLY - Show SonarQube analysis
+        if: ${{ inputs.demo_mode }}
+        shell: bash
+        run: echo "Would run the SonarQube Maven analysis and enforce its quality gate."
+
       - name: Analyze with SonarQube
+        if: ${{ !inputs.demo_mode }}
         shell: bash
         env:
           SONAR_HOST_URL: ${{ inputs.sonar_host_url }}
@@ -123,19 +183,34 @@ jobs:
             -Dsonar.projectKey="$SONAR_PROJECT_KEY"
 
   docker_build:
-    runs-on: selfhosted-ubuntu
+    runs-on: ${{ inputs.demo_mode && 'ubuntu-latest' || 'selfhosted-ubuntu' }}
     needs: java_build
     outputs:
-      image_digest: ${{ steps.publish_image.outputs.image_digest }}
-      image_reference: ${{ steps.publish_image.outputs.image_reference }}
+      image_digest: ${{ steps.simulate_image.outputs.image_digest || steps.publish_image.outputs.image_digest }}
+      image_reference: ${{ steps.simulate_image.outputs.image_reference || steps.publish_image.outputs.image_reference }}
     steps:
+      - name: SIMULATION ONLY - Show source checkout
+        if: ${{ inputs.demo_mode }}
+        env:
+          REPO_NAME: ${{ inputs.repo_name }}
+          BRANCH_NAME: ${{ inputs.branch_name }}
+        shell: bash
+        run: echo "Would check out $REPO_NAME at $BRANCH_NAME."
+
       - name: Checkout Code
+        if: ${{ !inputs.demo_mode }}
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.repo_name }}
           ref: ${{ inputs.branch_name }}
 
+      - name: SIMULATION ONLY - Show Azure login
+        if: ${{ inputs.demo_mode }}
+        shell: bash
+        run: echo "Would authenticate to Azure with the configured build identity."
+
       - name: Login to Azure
+        if: ${{ !inputs.demo_mode }}
         uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/azure/login@main
         with:
           keyvault_name: ${{ inputs.keyvault_name }}
@@ -147,8 +222,21 @@ jobs:
           tenant_id_secret_name: ${{ inputs.tenant_id_secret_name }}
           azure_subscription: ${{ inputs.acr_subscription }}
 
+      - name: SIMULATION ONLY - Show image build and publish
+        id: simulate_image
+        if: ${{ inputs.demo_mode }}
+        shell: bash
+        run: |
+          echo "::notice::SIMULATION ONLY - no ACR build, push, or Azure API call was made."
+          echo "Would build and push the application image to the development ACR."
+          echo "Would return a synthetic digest for downstream workflow simulation."
+          digest="sha256:0000000000000000000000000000000000000000000000000000000000000000"
+          echo "image_digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "image_reference=demo-dev.invalid/demo-app@$digest" >> "$GITHUB_OUTPUT"
+
       - name: Build and push image to ACR
         id: publish_image
+        if: ${{ !inputs.demo_mode }}
         uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/azure/acr/build@main
         with:
           dockerfile_path: ${{ inputs.dockerfile_path }}
@@ -158,11 +246,20 @@ jobs:
           image_tag: ${{ github.sha }}
   container_scan:
     name: Scan dev ACR image with Prisma Cloud
-    runs-on: selfhosted-ubuntu
+    runs-on: ${{ inputs.demo_mode && 'ubuntu-latest' || 'selfhosted-ubuntu' }}
     needs: docker_build
     steps:
+      - name: SIMULATION ONLY - Show Prisma scan and evidence upload
+        if: ${{ inputs.demo_mode }}
+        shell: bash
+        run: |
+          echo "::notice::SIMULATION ONLY - no Prisma Console, Key Vault, or ACR was contacted."
+          echo "Would scan the development ACR image with Prisma Cloud."
+          echo "Would upload the Prisma JSON scan result as a workflow artifact."
+
       - name: Scan image with Prisma Cloud
         id: prisma_scan
+        if: ${{ !inputs.demo_mode }}
         uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/scan@main
         with:
           image_name: ${{ needs.docker_build.outputs.image_reference }}
@@ -182,7 +279,7 @@ jobs:
           output_file: ${{ runner.temp }}/prisma-scan-results.json
 
       - name: Upload Prisma scan results
-        if: always() && steps.prisma_scan.outputs.results_file != ''
+        if: ${{ !inputs.demo_mode && always() && steps.prisma_scan.outputs.results_file != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: prisma-scan-results-${{ github.run_id }}

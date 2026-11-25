@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1720" height="460" viewBox="0 0 1720 460">
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M1 1 L11 6 L1 11 Z" fill="#334155"/>
+    </marker>
+    <style>
+      text { font-family: Arial, sans-serif; fill: #172033; }
+      .title { font-size: 30px; font-weight: 700; fill: #17365d; }
+      .head { font-size: 20px; font-weight: 700; }
+      .body { font-size: 16px; }
+      .box { stroke-width: 2; rx: 14; }
+      .arrow { stroke: #334155; stroke-width: 4; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect width="1720" height="460" fill="#ffffff"/>
+  <text x="860" y="54" text-anchor="middle" class="title">Standard CD promotes the same digest through Dev, UAT, and Prod</text>
+  <rect x="20" y="130" width="250" height="205" class="box" fill="#eaf2fb" stroke="#3875b8"/>
+  <text x="145" y="180" text-anchor="middle" class="head">Dev</text>
+  <text x="145" y="220" text-anchor="middle" class="body">Deploy Dev ACR image</text>
+  <text x="145" y="248" text-anchor="middle" class="body">to Dev AKS</text>
+  <text x="145" y="292" text-anchor="middle" class="body">Developer validates</text>
+  <path d="M270 232 H296" class="arrow"/>
+  <rect x="300" y="130" width="250" height="205" class="box" fill="#e7f4f4" stroke="#268080"/>
+  <text x="425" y="180" text-anchor="middle" class="head">Promote to UAT</text>
+  <text x="425" y="220" text-anchor="middle" class="body">UAT MSI imports the</text>
+  <text x="425" y="248" text-anchor="middle" class="body">same digest to UAT ACR</text>
+  <text x="425" y="292" text-anchor="middle" class="body">No image rebuild</text>
+  <path d="M550 232 H576" class="arrow"/>
+  <rect x="580" y="130" width="250" height="205" class="box" fill="#e8f5ee" stroke="#39805a"/>
+  <text x="705" y="180" text-anchor="middle" class="head">Validate UAT</text>
+  <text x="705" y="220" text-anchor="middle" class="body">Deploy UAT ACR image</text>
+  <text x="705" y="248" text-anchor="middle" class="body">to UAT AKS</text>
+  <text x="705" y="292" text-anchor="middle" class="body">Service validation</text>
+  <path d="M830 232 H856" class="arrow"/>
+  <rect x="860" y="130" width="250" height="205" class="box" fill="#fff5df" stroke="#bd8a29"/>
+  <text x="985" y="180" text-anchor="middle" class="head">Prod approval</text>
+  <text x="985" y="220" text-anchor="middle" class="body">GitHub prod Environment</text>
+  <text x="985" y="248" text-anchor="middle" class="body">pauses for a reviewer</text>
+  <text x="985" y="292" text-anchor="middle" class="body">Self-review prevented</text>
+  <path d="M1110 232 H1136" class="arrow"/>
+  <rect x="1140" y="130" width="250" height="205" class="box" fill="#f2edfc" stroke="#7957b5"/>
+  <text x="1265" y="180" text-anchor="middle" class="head">Promote to Prod</text>
+  <text x="1265" y="220" text-anchor="middle" class="body">Prod MSI imports and</text>
+  <text x="1265" y="248" text-anchor="middle" class="body">verifies UAT digest</text>
+  <text x="1265" y="292" text-anchor="middle" class="body">UAT ACR -> Prod ACR</text>
+  <path d="M1390 232 H1416" class="arrow"/>
+  <rect x="1420" y="130" width="280" height="205" class="box" fill="#e8f5ee" stroke="#39805a"/>
+  <text x="1560" y="180" text-anchor="middle" class="head">Deploy + monitor</text>
+  <text x="1560" y="220" text-anchor="middle" class="body">Deploy from Prod ACR</text>
+  <text x="1560" y="248" text-anchor="middle" class="body">to Prod AKS</text>
+  <text x="1560" y="292" text-anchor="middle" class="body">Retain known-good digest</text>
+  <text x="860" y="398" text-anchor="middle" class="body">The image digest remains unchanged across every registry import and deployment.</text>
+</svg>

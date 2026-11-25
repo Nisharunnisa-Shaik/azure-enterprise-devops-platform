@@ -1,6 +1,6 @@
 # Azure Enterprise DevOps Platform
 
-Reusable GitHub Actions for building Java container images, scanning them with Prisma Cloud Compute, promoting immutable ACR digests, and deploying to AKS with Kustomize. This README describes the files and setup in this repository; the broader target design and assessment are in [Azure DevSecOps Platform Assessment](./Azure_DevSecOps_Platform_Assessment.md).
+Reusable GitHub Actions for building Java container images, scanning them with Prisma Cloud Compute, promoting immutable ACR digests, and deploying to AKS with Kustomize. This README describes the files and setup in this repository; the broader target design is in the [Azure DevSecOps Platform Assessment](./Azure_DevSecOps_Platform_Assessment.md), with execution steps in the [Migration and Adoption Plan](./MIGRATION_AND_ADOPTION_PLAN.md).
 
 ## Repository contents
 
@@ -46,6 +46,12 @@ Fill in the Dev, UAT, and Prod ACR names, resource groups, subscriptions, and lo
 - **Emergency fix:** dispatch from `main` with an incident ID, select `build_fix`, and leave the digest input empty. Maven CI tests, builds, and scans the fix; the workflow deploys it to Dev and smoke-tests it, then the protected Prod approval gates importing that digest from Dev to Prod and deploying it. This expedited path skips UAT; the normal release still requires UAT validation. There is no emergency gate-bypass input.
 
 Configure `dev`, `uat`, and `prod` Environments in the application repository before running deployment workflows. For `prod`, configure required reviewers, prevent self-review, restrict deployment refs to the approved branches/tags, and disable administrator bypass when a no-bypass policy is required.
+
+### Full-flow demo (simulation only)
+
+To demonstrate job order without Azure resources, open **Actions → Maven CI and Environment Promotion → Run workflow**, select the branch, and set `demo_mode` to `true`. For an emergency demonstration, dispatch [`emergency-deploy.yml`](../maven-application/.github/workflows/emergency-deploy.yml) from `main`, enter an incident ID, choose `rollback` or `build_fix`, and set `demo_mode` to `true`. A rollback demo may leave `image_reference` empty; a build-fix demo must leave it empty.
+
+Simulation uses GitHub-hosted runners and synthetic `.invalid` image references. It echoes build, scan, promotion, deployment, and smoke-test steps, and skips checkout, Maven, SonarQube, Prisma, Key Vault, Azure login, ACR, AKS, and endpoint calls. GitHub Environment protections, including a configured production approval, still apply. The run is only an orchestration demo: it creates no image, deploys nothing, and is not evidence that CI checks or an Azure deployment passed. With `demo_mode` left false, missing required CI configuration fails an explicit preflight check rather than silently switching to simulation. Push-triggered runs always use the real workflow path.
 
 ## Azure access needed
 

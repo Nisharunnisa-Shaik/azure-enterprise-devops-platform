@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1680" height="400" viewBox="0 0 1680 400">
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M1 1 L11 6 L1 11 Z" fill="#334155"/>
+    </marker>
+    <style>
+      text { font-family: Arial, sans-serif; fill: #172033; }
+      .title { font-size: 30px; font-weight: 700; fill: #17365d; }
+      .head { font-size: 21px; font-weight: 700; }
+      .body { font-size: 17px; }
+      .box { stroke-width: 2; rx: 14; }
+      .arrow { stroke: #334155; stroke-width: 4; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect width="1680" height="400" fill="#ffffff"/>
+  <text x="840" y="58" text-anchor="middle" class="title">Repository governance to controlled Azure delivery</text>
+  <rect x="28" y="140" width="240" height="170" class="box" fill="#eaf2fb" stroke="#3875b8"/>
+  <text x="148" y="194" text-anchor="middle" class="head">Pull request</text>
+  <text x="148" y="232" text-anchor="middle" class="body">Developer proposes</text>
+  <text x="148" y="258" text-anchor="middle" class="body">a reviewed change</text>
+  <path d="M268 225 H296" class="arrow"/>
+  <rect x="300" y="140" width="240" height="170" class="box" fill="#f2edfc" stroke="#7957b5"/>
+  <text x="420" y="194" text-anchor="middle" class="head">Review + checks</text>
+  <text x="420" y="232" text-anchor="middle" class="body">CODEOWNERS review</text>
+  <text x="420" y="258" text-anchor="middle" class="body">Required CI checks</text>
+  <path d="M540 225 H568" class="arrow"/>
+  <rect x="572" y="140" width="240" height="170" class="box" fill="#e8f5ee" stroke="#39805a"/>
+  <text x="692" y="194" text-anchor="middle" class="head">Protected branch</text>
+  <text x="692" y="232" text-anchor="middle" class="body">Rules pass before</text>
+  <text x="692" y="258" text-anchor="middle" class="body">merge is allowed</text>
+  <path d="M812 225 H840" class="arrow"/>
+  <rect x="844" y="140" width="240" height="170" class="box" fill="#eaf2fb" stroke="#3875b8"/>
+  <text x="964" y="194" text-anchor="middle" class="head">Reusable workflow</text>
+  <text x="964" y="232" text-anchor="middle" class="body">Reviewed central</text>
+  <text x="964" y="258" text-anchor="middle" class="body">template and actions</text>
+  <path d="M1084 225 H1112" class="arrow"/>
+  <rect x="1116" y="140" width="240" height="170" class="box" fill="#fff5df" stroke="#bd8a29"/>
+  <text x="1236" y="194" text-anchor="middle" class="head">Trusted runner</text>
+  <text x="1236" y="232" text-anchor="middle" class="body">System MSI bootstrap</text>
+  <text x="1236" y="258" text-anchor="middle" class="body">Scoped target identity</text>
+  <path d="M1356 225 H1384" class="arrow"/>
+  <rect x="1388" y="140" width="264" height="170" class="box" fill="#e7f4f4" stroke="#268080"/>
+  <text x="1520" y="194" text-anchor="middle" class="head">Azure operation</text>
+  <text x="1520" y="232" text-anchor="middle" class="body">Build in ACR or</text>
+  <text x="1520" y="258" text-anchor="middle" class="body">deploy to AKS</text>
+  <text x="840" y="360" text-anchor="middle" class="body">Each gate must pass before the next controlled action proceeds.</text>
+</svg>

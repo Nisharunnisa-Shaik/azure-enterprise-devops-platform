@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="430" viewBox="0 0 1600 430">
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M1 1 L11 6 L1 11 Z" fill="#334155"/>
+    </marker>
+    <style>
+      text { font-family: Arial, sans-serif; fill: #172033; }
+      .title { font-size: 30px; font-weight: 700; fill: #17365d; }
+      .head { font-size: 20px; font-weight: 700; }
+      .body { font-size: 16px; }
+      .box { stroke-width: 2; rx: 14; }
+      .arrow { stroke: #334155; stroke-width: 4; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect width="1600" height="430" fill="#ffffff"/>
+  <text x="800" y="56" text-anchor="middle" class="title">Maven CI builds and scans one immutable image</text>
+  <rect x="20" y="130" width="230" height="175" class="box" fill="#eaf2fb" stroke="#3875b8"/>
+  <text x="135" y="190" text-anchor="middle" class="head">Checkout</text>
+  <text x="135" y="228" text-anchor="middle" class="body">Selected application</text>
+  <text x="135" y="254" text-anchor="middle" class="body">commit</text>
+  <path d="M250 218 H274" class="arrow"/>
+  <rect x="278" y="130" width="230" height="175" class="box" fill="#e8f5ee" stroke="#39805a"/>
+  <text x="393" y="190" text-anchor="middle" class="head">Maven tests</text>
+  <text x="393" y="228" text-anchor="middle" class="body">Compile and run</text>
+  <text x="393" y="254" text-anchor="middle" class="body">the test suite</text>
+  <path d="M508 218 H532" class="arrow"/>
+  <rect x="536" y="130" width="230" height="175" class="box" fill="#f2edfc" stroke="#7957b5"/>
+  <text x="651" y="190" text-anchor="middle" class="head">SonarQube</text>
+  <text x="651" y="228" text-anchor="middle" class="body">Quality gate must</text>
+  <text x="651" y="254" text-anchor="middle" class="body">pass</text>
+  <path d="M766 218 H790" class="arrow"/>
+  <rect x="794" y="130" width="230" height="175" class="box" fill="#e7f4f4" stroke="#268080"/>
+  <text x="909" y="190" text-anchor="middle" class="head">Build image</text>
+  <text x="909" y="228" text-anchor="middle" class="body">Publish once to</text>
+  <text x="909" y="254" text-anchor="middle" class="body">the Dev ACR</text>
+  <path d="M1024 218 H1048" class="arrow"/>
+  <rect x="1052" y="130" width="230" height="175" class="box" fill="#fff5df" stroke="#bd8a29"/>
+  <text x="1167" y="190" text-anchor="middle" class="head">Prisma scan</text>
+  <text x="1167" y="228" text-anchor="middle" class="body">Scan the image</text>
+  <text x="1167" y="254" text-anchor="middle" class="body">with twistcli</text>
+  <path d="M1282 218 H1306" class="arrow"/>
+  <rect x="1310" y="130" width="270" height="175" class="box" fill="#fcecec" stroke="#b94a48"/>
+  <text x="1445" y="190" text-anchor="middle" class="head">Release evidence</text>
+  <text x="1445" y="228" text-anchor="middle" class="body">Immutable digest +</text>
+  <text x="1445" y="254" text-anchor="middle" class="body">Prisma JSON report</text>
+  <text x="800" y="360" text-anchor="middle" class="body">A failed test, quality gate, or image scan stops promotion. SBOM and signing are not shown because they are not implemented.</text>
+</svg>

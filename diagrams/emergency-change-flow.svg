@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1720" height="700" viewBox="0 0 1720 700">
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M1 1 L11 6 L1 11 Z" fill="#334155"/>
+    </marker>
+    <style>
+      text { font-family: Arial, sans-serif; fill: #172033; }
+      .title { font-size: 30px; font-weight: 700; fill: #17365d; }
+      .lane { font-size: 18px; font-weight: 700; fill: #334155; }
+      .head { font-size: 18px; font-weight: 700; }
+      .body { font-size: 15px; }
+      .box { stroke-width: 2; rx: 14; }
+      .arrow { stroke: #334155; stroke-width: 4; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect width="1720" height="700" fill="#ffffff"/>
+  <text x="860" y="48" text-anchor="middle" class="title">Emergency change: rollback or build and deploy a fix</text>
+  <text x="860" y="82" text-anchor="middle" class="body">Dispatch from protected main with an incident ID. Both paths require production Environment approval.</text>
+
+  <text x="35" y="142" class="lane">ROLLBACK: use a known-good digest already in Prod ACR</text>
+  <rect x="35" y="165" width="300" height="130" class="box" fill="#eaf2fb" stroke="#3875b8"/>
+  <text x="185" y="215" text-anchor="middle" class="head">Select rollback digest</text>
+  <text x="185" y="252" text-anchor="middle" class="body">Existing Prod ACR image</text>
+  <path d="M335 230 H366" class="arrow"/>
+  <rect x="370" y="165" width="300" height="130" class="box" fill="#fff5df" stroke="#bd8a29"/>
+  <text x="520" y="215" text-anchor="middle" class="head">Prod approval</text>
+  <text x="520" y="252" text-anchor="middle" class="body">Required reviewer</text>
+  <path d="M670 230 H701" class="arrow"/>
+  <rect x="705" y="165" width="300" height="130" class="box" fill="#f2edfc" stroke="#7957b5"/>
+  <text x="855" y="215" text-anchor="middle" class="head">Deploy to Prod</text>
+  <text x="855" y="252" text-anchor="middle" class="body">No ACR import needed</text>
+  <path d="M1005 230 H1036" class="arrow"/>
+  <rect x="1040" y="165" width="300" height="130" class="box" fill="#e8f5ee" stroke="#39805a"/>
+  <text x="1190" y="215" text-anchor="middle" class="head">Smoke test + monitor</text>
+  <text x="1190" y="252" text-anchor="middle" class="body">Rollback again if unhealthy</text>
+  <rect x="1375" y="165" width="300" height="130" class="box" fill="#f5f6f8" stroke="#64748b"/>
+  <text x="1525" y="215" text-anchor="middle" class="head">Record incident evidence</text>
+  <text x="1525" y="252" text-anchor="middle" class="body">Digest, approval, run, outcome</text>
+  <path d="M1340 230 H1371" class="arrow"/>
+
+  <text x="35" y="382" class="lane">BUILD FIX: CI -> Dev validation -> production approval -> Prod ACR import</text>
+  <rect x="30" y="405" width="210" height="160" class="box" fill="#eaf2fb" stroke="#3875b8"/>
+  <text x="135" y="455" text-anchor="middle" class="head">Maven tests</text>
+  <text x="135" y="491" text-anchor="middle" class="body">and SonarQube</text>
+  <text x="135" y="523" text-anchor="middle" class="body">from main commit</text>
+  <path d="M240 485 H266" class="arrow"/>
+  <rect x="270" y="405" width="210" height="160" class="box" fill="#fff5df" stroke="#bd8a29"/>
+  <text x="375" y="455" text-anchor="middle" class="head">Build in Dev ACR</text>
+  <text x="375" y="491" text-anchor="middle" class="body">Prisma image scan</text>
+  <text x="375" y="523" text-anchor="middle" class="body">Keep digest + report</text>
+  <path d="M480 485 H506" class="arrow"/>
+  <rect x="510" y="405" width="210" height="160" class="box" fill="#e8f5ee" stroke="#39805a"/>
+  <text x="615" y="455" text-anchor="middle" class="head">Deploy to Dev</text>
+  <text x="615" y="491" text-anchor="middle" class="body">Smoke-test the</text>
+  <text x="615" y="523" text-anchor="middle" class="body">new fix</text>
+  <path d="M720 485 H746" class="arrow"/>
+  <rect x="750" y="405" width="210" height="160" class="box" fill="#fff5df" stroke="#bd8a29"/>
+  <text x="855" y="455" text-anchor="middle" class="head">Prod approval</text>
+  <text x="855" y="491" text-anchor="middle" class="body">Protected GitHub</text>
+  <text x="855" y="523" text-anchor="middle" class="body">Environment gate</text>
+  <path d="M960 485 H986" class="arrow"/>
+  <rect x="990" y="405" width="210" height="160" class="box" fill="#e7f4f4" stroke="#268080"/>
+  <text x="1095" y="455" text-anchor="middle" class="head">Import Dev -> Prod</text>
+  <text x="1095" y="491" text-anchor="middle" class="body">Prod MSI verifies</text>
+  <text x="1095" y="523" text-anchor="middle" class="body">the same digest</text>
+  <path d="M1200 485 H1226" class="arrow"/>
+  <rect x="1230" y="405" width="210" height="160" class="box" fill="#f2edfc" stroke="#7957b5"/>
+  <text x="1335" y="455" text-anchor="middle" class="head">Deploy to Prod</text>
+  <text x="1335" y="491" text-anchor="middle" class="body">Smoke test and</text>
+  <text x="1335" y="523" text-anchor="middle" class="body">monitor health</text>
+  <path d="M1440 485 H1466" class="arrow"/>
+  <rect x="1470" y="405" width="220" height="160" class="box" fill="#f5f6f8" stroke="#64748b"/>
+  <text x="1580" y="455" text-anchor="middle" class="head">Record outcome</text>
+  <text x="1580" y="491" text-anchor="middle" class="body">Rollback if unhealthy</text>
+  <text x="1580" y="523" text-anchor="middle" class="body">No UAT in this path</text>
+
+  <text x="860" y="640" text-anchor="middle" class="body">The emergency workflow has no gate-bypass input. Standard releases continue through UAT.</text>
+</svg>

@@ -88,19 +88,7 @@ The platform standardizes mandatory controls while leaving application code, ser
 
 The repository governance model combines branch protection, code-owner review, required security checks, environment protection, and auditable deployment history. Azure jobs run on trusted self-hosted runners using managed identities; no OIDC federation is used.
 
-```mermaid
-flowchart LR
-    A[Pull request] --> B[CODEOWNERS approval]
-    A --> C[Required CI and security checks]
-    B --> D[Protected default branch]
-    C --> D
-    D --> E[Reusable workflow]
-    E --> F[Trusted self-hosted runner]
-    F --> G[System-assigned MSI]
-    G --> H[Key Vault bootstrap access]
-    F --> I[Scoped target MSI]
-    I --> J[ACR build or AKS deployment]
-```
+![Repository governance flow from pull request to controlled Azure delivery](diagrams/repository-governance-flow.png)
 
 **Figure 1. Repository governance and MSI-based Azure access**
 
@@ -166,31 +154,19 @@ GitHub Environment required reviewers can have `Read` access; only one configure
 
 ### 5.2 Standard CI build pipeline
 
-```mermaid
-flowchart LR
-    A[Checkout source] --> B[Build and unit tests]
-    B --> C[Code quality and SAST]
-    C --> D[Build in Dev ACR]
-    D --> E[Prisma twistcli scan and JSON report]
-    E --> F[SBOM and image signing]
-    F --> G[Record immutable digest and evidence]
-```
+![Maven CI build, quality gate, image scan, and release evidence flow](diagrams/maven-ci-flow.png)
+
+**Figure 7. Maven CI build and image scanning flow**
 
 Secret scanning/push protection and Dependabot alerts are enabled in each source application repository through GitHub Advanced Security/repository security settings; they are not stages in this CI workflow. A Dependency Review action may be configured as a separate required pull-request check. The Prisma `twistcli` action scans the image in the development ACR and uploads its JSON result as a workflow artifact. CI-required checks fail closed: an image is not promoted if a mandatory test, code-quality, or image-security gate fails. Approved exceptions must have an owner, justification, compensating control, and expiry.
 
 ### 5.3 Standard CD promotion and deployment pipeline
 
-```mermaid
-flowchart LR
-    A[Deploy from Dev ACR to DEV AKS] --> B[Rollout and developer validation]
-    B --> C[Import digest into UAT ACR using UAT MSI]
-    C --> D[Deploy from UAT ACR to UAT AKS]
-    D --> E[UAT validation]
-    E --> F[Production approval]
-    F --> G[Import digest into PROD ACR using PROD MSI]
-    G --> H[Deploy from PROD ACR to PROD AKS]
-    H --> I[Monitor and retain rollback version]
-```
+![Standard CD flow promoting one image digest from Dev through UAT to Prod](diagrams/cd-promotion-flow.png)
+
+**Figure 8. Standard CD promotion and deployment flow**
+
+Read the arrows from left to right. The image is built once; each ACR import copies the same digest, not a rebuilt image. The UAT MSI performs the Dev-to-UAT import. After UAT validation, the required production reviewer approval gates the Prod MSI's UAT-to-Prod import and deployment. Monitoring retains a known-good digest for rollback.
 
 The CI build and scan produce one immutable development-ACR digest. Standard promotion is a release/CD stage after validation: the UAT MSI imports Dev to UAT, then the production approval gates the production MSI importing UAT to Prod. The emergency `build_fix` path instead smoke-tests the image in Dev, then the protected production job imports the same digest directly from Dev to Prod. Each import is by digest and must be verified before deployment. For same-tenant ACR imports, grant the destination environment MSI **Container Registry Data Importer and Data Reader** on both the source and destination registries; the production MSI therefore needs source access to both UAT (standard releases) and Dev (emergency fixes). Keep the build MSI limited to pushing to Dev. Each AKS kubelet identity separately receives pull access to its own ACR.
 
@@ -264,20 +240,7 @@ No long-lived cloud credentials should be committed to repositories or printed i
 
 Build and scan an image once in the development ACR from the approved commit. Deploy it to development AKS and wait for developer validation. Then import the same image digest into the UAT ACR and deploy it to UAT AKS. After UAT validation and production approval, import that digest into the production ACR and deploy it to production AKS. Never rebuild the application image between stages. Verify each destination digest matches the source digest and record the import and deployment evidence.
 
-```mermaid
-flowchart LR
-    A[Commit SHA] --> B[CI checks]
-    B --> C[Build and scan once]
-    C --> D[Dev ACR image at sha256 digest]
-    D --> E[Deploy to DEV AKS]
-    E --> F[Developer validation]
-    F --> G[Import same digest to UAT ACR]
-    G --> H[Deploy to UAT AKS]
-    H --> I[UAT validation]
-    I --> J[Production approval]
-    J --> K[Import same digest to PROD ACR]
-    K --> L[Deploy to PROD AKS]
-```
+The standard release sequence is shown in Figure 8: CI creates one digest, and the same artifact is validated and promoted through each environment.
 
 Use separate managed identities and least-privilege ACR permissions for each import/deploy boundary. Capture the source and destination registry names, commit SHA, image digest, Prisma JSON report, SBOM/signature references, workflow run, approvals, and deployment outcome for every promotion.
 
@@ -344,22 +307,9 @@ In the application repository, `.github/workflows/emergency-deploy.yml` is manua
 
 This design supports both recovery from a bad release and remediation of a new defect or Sev1 vulnerability without rebuilding an unscanned image or skipping the production approval. The new fix must be merged to protected `main` before dispatch. The workflow does not include an emergency gate-bypass input.
 
-```mermaid
-flowchart TD
-    A[Incident declared and approved] --> B[Dispatch from protected main with incident ID]
-    B --> C{Emergency action}
-    C -- rollback --> D[Select known-good production digest]
-    C -- build_fix --> E[Run Maven tests and SonarQube]
-    E --> F[Build in Dev ACR and run Prisma scan]
-    F --> G[Deploy to Dev and smoke test]
-    D --> H[Required production Environment approval]
-    G --> H
-    H --> I[Import to Prod ACR, verify, deploy, and smoke test]
-    I --> J{Healthy?}
-    J -- Yes --> K[Record evidence and reconcile]
-    J -- No --> L[Rollback and continue incident response]
-    L --> K
-```
+![Emergency rollback and build-fix paths through Dev validation and protected production deployment](diagrams/emergency-change-flow.png)
+
+**Figure 9. Emergency rollback and build-fix flow**
 
 ### Required controls
 
@@ -402,13 +352,15 @@ Publish formulas and time windows. Count emergency and failed releases consisten
 | --- | --- | --- |
 | **1. Discovery** | Inventory repositories, pipelines, owners, environments, credentials, deployment manifests, and baseline metrics | Each production service has an owner and migration priority |
 | **2. Platform readiness** | Publish reusable workflows, runner platform, onboarding guide, and security controls | Templates and security checks pass representative validation |
-| **3. Pilot adoption** | Onboard five representative applications; validate build, deployment, security checks, and rollback | Pilot release and rollback complete with evidence |
-| **4. Migration waves** | Wave 1: 10 low-complexity apps; Wave 2: 15 medium-complexity apps; Wave 3: 15 critical production apps | Each wave meets agreed service-level onboarding criteria |
+| **3. Pilot adoption** | Onboard five representative applications from Wave 1; validate build, deployment, security checks, and rollback | Pilot release and rollback complete with evidence |
+| **4. Migration waves** | Wave 1: 10 low-complexity apps, including the five pilots; Wave 2: 15 medium-complexity apps; Wave 3: 15 critical production apps | Each wave meets agreed service-level onboarding criteria |
 | **5. Continuous improvement** | Review DORA/control metrics, resolve exceptions, and improve templates | No unowned exceptions; adoption and platform SLO targets are met |
+
+The wave plan assumes a 40-application cohort; discovery confirms the actual application-to-team mapping and migration count. See the [Migration and Adoption Plan](./MIGRATION_AND_ADOPTION_PLAN.md) for onboarding steps, acceptance criteria, evidence, and ownership.
 
 ![DevSecOps platform migration and adoption roadmap](diagrams/migration-adoption-plan.png)
 
-**Figure 5. DevSecOps platform migration and adoption roadmap**
+**Figure 10. DevSecOps platform migration and adoption roadmap**
 
 Project teams receive an onboarding guide, deployment runbook, troubleshooting guide, and office-hours support. Keep legacy pipelines available during the transition; onboard one service at a time rather than requiring a big-bang rewrite.
 
@@ -439,7 +391,7 @@ Provider documentation in the References section substantiates that a capability
 | App Service blue-green | App Service staging-slot settings, health-check status, swap history, and Application Insights/Azure Monitor evidence | Strategy specified; App Service deployment template is not implemented in this repository |
 | Database changes | No database is present in the current application; if added, retain migration run, compatibility checks, and Azure SQL point-in-time restore test evidence | Future-only policy; no current migration job or database evidence |
 
-Test policy changes in a representative repository before broad enforcement. Validate both the normal path and failure paths, including a failed check, rejected production approval, unhealthy rollout, and emergency rollback.
+Test policy changes in a representative repository before broad enforcement. Validate both the normal path and failure paths, including a failed check, rejected production approval, unhealthy rollout, and emergency rollback. The application workflows also provide an explicit `demo_mode` for echo-only orchestration demonstrations; those runs skip real CI checks and Azure operations and must not be used as deployment or security-control evidence.
 
 ## 13. Risks and mitigations
 
