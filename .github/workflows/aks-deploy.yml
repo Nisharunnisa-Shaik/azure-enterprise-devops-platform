@@ -51,9 +51,6 @@ on:
             image_reference: ${{ inputs.image_reference }}
             require_image_registry_match: ${{ inputs.require_image_registry_match }}
             require_smoke_test: ${{ inputs.require_smoke_test }}
-            image_reference: ${{ inputs.image_reference }}
-            require_image_registry_match: ${{ inputs.require_image_registry_match }}
-            require_smoke_test: ${{ inputs.require_smoke_test }}
 
         - name: Login to Azure
           uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/azure/login@main
