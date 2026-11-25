@@ -53,7 +53,7 @@ The proposed Azure-based paved road provides:
 
 - Centrally maintained reusable GitHub Actions workflows and composite actions.
 - Ephemeral GitHub ARC runners for trusted build and deployment jobs.
-- Federated workload identity instead of long-lived cloud credentials.
+- Azure Managed Service Identity (MSI) for pipeline access, without long-lived cloud credentials.
 - Automated testing, security checks, artifact generation, and evidence capture.
 - Build-once, promote-by-digest releases through development, UAT, and production.
 - Progressive delivery, health-based promotion, and rollback.
@@ -76,7 +76,7 @@ The platform standardizes mandatory controls while leaving application code, ser
 | Area | Challenge | Platform response |
 | --- | --- | --- |
 | Delivery | Inconsistent pipelines | Reusable workflows and standard release contracts |
-| Security | Broad production permissions | Federated identities and scoped Azure RBAC |
+| Security | Broad production permissions | Managed identities and scoped Azure RBAC |
 | Compliance | Fragmented evidence | Central checks and traceable release records |
 | Operations | Different deployment standards | Shared deployment templates and environment gates |
 | Governance | Teams can bypass controls | Protected branches, code owners, and required checks |
@@ -86,11 +86,23 @@ The platform standardizes mandatory controls while leaving application code, ser
 
 ### 4.1 Repository governance
 
-The repository governance model combines branch protection, code-owner review, required security checks, environment protection, and auditable deployment history.
+The repository governance model combines branch protection, code-owner review, required security checks, environment protection, and auditable deployment history. Azure jobs run on trusted self-hosted runners using managed identities; no OIDC federation is used.
 
-![Repository governance controls](diagrams/repo-governance.png)
+```mermaid
+flowchart LR
+    A[Pull request] --> B[CODEOWNERS approval]
+    A --> C[Required CI and security checks]
+    B --> D[Protected default branch]
+    C --> D
+    D --> E[Reusable workflow]
+    E --> F[Trusted self-hosted runner]
+    F --> G[System-assigned MSI]
+    G --> H[Key Vault bootstrap access]
+    F --> I[Scoped target MSI]
+    I --> J[ACR build or AKS deployment]
+```
 
-**Figure 1. Repository governance and security controls**
+**Figure 1. Repository governance and MSI-based Azure access**
 
 ### 4.2 Platform and project organizations
 
@@ -131,25 +143,27 @@ The platform connects source control, reusable GitHub Actions workflows, ACR, an
 flowchart LR
     A[Checkout source] --> B[Build and unit tests]
     B --> C[Code quality and SAST]
-    C --> D[Dependency and secret checks]
-    D --> E[Build container]
-    E --> F[Container scan and SBOM]
-    F --> G[Sign and publish to ACR]
+    C --> D[Infrastructure policy checks when needed]
+    D --> E[Build in Dev ACR]
+    E --> F[Prisma twistcli scan and JSON report]
+    F --> G[SBOM and image signing]
     G --> H[Record immutable digest and evidence]
 ```
 
-Required checks fail closed: an image is not promoted if a mandatory test, policy, or security gate fails. Approved exceptions must have an owner, justification, compensating control, and expiry.
+Secret scanning/push protection and Dependabot alerts are enabled in each source application repository through GitHub Advanced Security/repository security settings; they are not stages in this CI workflow. A Dependency Review action may be configured as a separate required pull-request check. The Prisma `twistcli` action scans the image in the development ACR and uploads its JSON result as a workflow artifact. CI-required checks fail closed: an image is not promoted if a mandatory test, policy, or image security gate fails. Approved exceptions must have an owner, justification, compensating control, and expiry.
 
 ### 5.3 Standard CD pipeline
 
 ```mermaid
 flowchart LR
-    A[Deploy DEV] --> B[Rollout and smoke validation]
-    B --> C[Deploy same digest to UAT]
-    C --> D[UAT validation]
-    D --> E[Production approval]
-    E --> F[Deploy same digest to PROD]
-    F --> G[Monitor and retain rollback version]
+    A[Deploy from Dev ACR to DEV AKS] --> B[Rollout and developer validation]
+    B --> C[Import digest into UAT ACR]
+    C --> D[Deploy from UAT ACR to UAT AKS]
+    D --> E[UAT validation]
+    E --> F[Production approval]
+    F --> G[Import digest into PROD ACR]
+    G --> H[Deploy from PROD ACR to PROD AKS]
+    H --> I[Monitor and retain rollback version]
 ```
 
 ### 5.4 Reusable workflow contract
@@ -176,7 +190,8 @@ For detailed repository implementation guidance, see [Repository Controls as Cod
 | Least-privilege Actions token | Read-only `GITHUB_TOKEN` baseline; grant permissions only to the job that needs them | Workflow YAML and run permissions |
 | Reusable workflow governance | Pin to reviewed revisions; use explicit inputs/secrets; prevent mandatory checks from being skipped | Workflow reference and run evidence |
 | Environment protection | Require production approvers and scope deployment variables/secrets by environment | Deployment history and approval records |
-| Security checks | Require tests, code scanning, dependency review, secret scanning, container/IaC checks | Required status checks and scan reports |
+| Repository security posture | Enable GHAS secret scanning/push protection and Dependabot alerts in each source application repository; these are not Maven CI jobs | Repository security settings and GHAS/Dependabot alerts |
+| CI security gates | Require tests, SonarQube, container/IaC checks, and any separately configured code or dependency review jobs | Required status checks and scan reports |
 
 Branch patterns should be agreed with teams; a baseline is `main`, `develop`, `release/*`, and `hotfix/*`. Only make checks mandatory after confirming they run reliably for all relevant pull requests.
 
@@ -185,41 +200,48 @@ Branch patterns should be agreed with teams; a baseline is `main`, `develop`, `r
 | Control | Example implementation |
 | --- | --- |
 | SAST | GitHub CodeQL |
-| Dependency scanning | Dependabot alerts/updates and dependency review |
-| Secret detection | GitHub secret scanning and push protection |
-| Container scanning | Trivy and/or Microsoft Defender for Cloud |
+| Dependency alerting | Dependabot dependency graph, alerts, and security updates at application-repository level; optional Dependency Review PR check |
+| Secret detection | GHAS secret scanning and push protection enabled at application-repository level, outside the Maven CI workflow |
+| Container scanning | Prisma Cloud Compute `twistcli`; retain the JSON scan report as a workflow artifact |
 | Infrastructure scanning | Checkov or an equivalent policy scanner |
 | SBOM generation | Syft; produce SPDX or CycloneDX for each image digest |
 | Image signing | Cosign; verify the signature before promotion |
 
 ### 6.3 Identity and access
 
-- Use GitHub OIDC federation with Microsoft Entra ID; avoid long-lived Azure credentials in repository secrets.
-- Scope federated credentials to the expected repository and branch or GitHub Environment.
-- Use separate identities for image publishing, non-production deployment, and production deployment.
-- Grant Azure roles at the narrowest applicable scope. The build identity should push only to the required ACR; a deployment identity should access only its target AKS resources and namespace.
+- Use MSI from trusted self-hosted runners; do not request GitHub OIDC tokens or store Azure credentials in repository secrets.
+- Use the runner's system-assigned identity only for the required bootstrap access, such as reading target identity configuration from Key Vault.
+- Use separate user-assigned MSIs for image publishing, non-production deployment, and production deployment where practical. Attach only the identities needed by the runner pool.
+- Grant Azure roles at the narrowest applicable scope. The build MSI should push only to the required ACR; a deployment MSI should access only its target AKS resources and namespace.
 - Keep ACR pull permissions on the AKS kubelet identity separate from deployment permissions.
 - Store application secrets in Key Vault and retrieve only what a job needs.
 - Use time-bound privileged access through Microsoft Entra PIM for approved emergency work.
+- For ARC runners on AKS, validate how the runner job securely obtains MSI access; do not assume every pod should be able to access the node's managed identity endpoint.
 
 No long-lived cloud credentials should be committed to repositories or printed in workflow logs.
 
 ## 7. Artifact promotion strategy
 
-Build an image once from the approved commit, record its digest, then deploy that exact digest in each environment. Do not rebuild or retag different image bytes for UAT or production. If separate ACRs are required, replicate the artifact and verify the digest remains unchanged.
+Build and scan an image once in the development ACR from the approved commit. Deploy it to development AKS and wait for developer validation. Then import the same image digest into the UAT ACR and deploy it to UAT AKS. After UAT validation and production approval, import that digest into the production ACR and deploy it to production AKS. Never rebuild the application image between stages. Verify each destination digest matches the source digest and record the import and deployment evidence.
 
 ```mermaid
 flowchart LR
     A[Commit SHA] --> B[CI checks]
     B --> C[Build and scan once]
-    C --> D[ACR image at sha256 digest]
-    D --> E[DEV]
-    E --> F[UAT]
-    F --> G[PROD approval]
-    G --> H[PROD]
+    C --> D[Dev ACR image at sha256 digest]
+    D --> E[Deploy to DEV AKS]
+    E --> F[Developer validation]
+    F --> G[Import same digest to UAT ACR]
+    G --> H[Deploy to UAT AKS]
+    H --> I[UAT validation]
+    I --> J[Production approval]
+    J --> K[Import same digest to PROD ACR]
+    K --> L[Deploy to PROD AKS]
 ```
 
-Capture the commit SHA, image digest, SBOM/signature references, workflow run, approvals, and deployment outcome for every promotion.
+Use separate managed identities and least-privilege ACR permissions for each import/deploy boundary. Capture the source and destination registry names, commit SHA, image digest, Prisma JSON report, SBOM/signature references, workflow run, approvals, and deployment outcome for every promotion.
+
+> **Implementation gap:** The current caller workflow builds one ACR image and passes its reference directly to all deployment environments. Add explicit ACR import jobs and per-environment registry configuration before describing this promotion flow as operational.
 
 ## 8. Progressive delivery runbook
 
@@ -247,17 +269,6 @@ Use Azure Monitor, Application Insights, and Container Insights for request, app
 
 Stop promotion and restore the stable version when a hard threshold is breached. Preserve logs, events, metric snapshots, and the candidate digest for diagnosis. Tune thresholds per service SLO and traffic volume before production use.
 
-### 8.3 Database changes
-
-Use expand/contract changes:
-
-1. Add backward-compatible schema, such as nullable fields or additive tables.
-2. Deploy code that works with both old and new schema.
-3. Backfill data through observable, restartable jobs.
-4. Remove obsolete schema only in a later release after all consumers have migrated.
-
-Take and verify backups before destructive changes. Application rollback must not depend on reversing an irreversible database migration.
-
 ## 9. Emergency change workflow
 
 Emergency changes are for active incidents or material security risks, not schedule pressure.
@@ -279,7 +290,7 @@ flowchart TD
 
 - Record the incident/change ID, severity, service, impact, incident commander, and approvers.
 - Activate least-privilege Microsoft Entra PIM access with MFA and justification; maximum activation duration is **4 hours**.
-- Retain minimum gates: build/focused tests, secret scan, dependency check, image scan/signature verification, and smoke test.
+- Retain minimum pipeline gates: build/focused tests, image scan/signature verification, and smoke test. Keep application-repository GHAS secret scanning/push protection and Dependabot alerts enabled as independent repository controls, not as CI stages.
 - Deploy one immutable digest to the smallest affected scope; monitor health and retain a rollback option.
 - Capture commit, digest, approvals, PIM activation, pipeline run, test/scan results, and before/after monitoring signals.
 - Complete a post-incident review within **48 hours**. Back-merge the change, remove temporary access, close exceptions, and assign corrective actions.
@@ -303,7 +314,7 @@ Join GitHub deployment records with Azure Monitor and incident data using servic
 | --- | ---: |
 | Template adoption | >90% |
 | Security scan coverage | 100% |
-| OIDC adoption | 100% |
+| Approved MSI coverage for Azure jobs | 100% |
 | Deployment success rate | >95% |
 | Rollback success rate | >99% |
 
@@ -326,7 +337,8 @@ Project teams receive an onboarding guide, deployment runbook, troubleshooting g
 | Validation area | Checks |
 | --- | --- |
 | Functional | Build, tests, deployment, artifact digest consistency, and environment promotion |
-| Security | Secret scanning, dependency review, code scanning, container/IaC scans, signature verification |
+| Source-repository security | GHAS secret scanning/push protection and Dependabot alerts enabled on the application repository |
+| CI security | SonarQube, container/IaC scans, signature verification, and any explicitly configured PR review jobs |
 | Operational | Canary progression, rollback, monitoring alerts, and evidence retention |
 | Governance | Pull-request approval, CODEOWNERS enforcement, required checks, environment approvals, and bypass audit |
 
@@ -353,7 +365,7 @@ Test policy changes in a representative repository before broad enforcement. Val
 
 ## 15. Conclusion
 
-The proposed platform gives forty engineering teams a secure, scalable delivery path while preserving application-team ownership. Central reusable workflows, ephemeral runners, federated identity, immutable artifact promotion, progressive delivery, and auditable repository controls establish consistent standards without requiring a big-bang pipeline rewrite.
+The proposed platform gives forty engineering teams a secure, scalable delivery path while preserving application-team ownership. Central reusable workflows, ephemeral runners, managed identities, immutable artifact promotion, progressive delivery, and auditable repository controls establish consistent standards without requiring a big-bang pipeline rewrite.
 
 ## 16. References and AI disclosure
 
@@ -366,6 +378,7 @@ The proposed platform gives forty engineering teams a secure, scalable delivery 
 - [Azure Kubernetes Service](https://learn.microsoft.com/en-us/azure/aks/)
 - [Azure Container Registry](https://learn.microsoft.com/en-us/azure/container-registry/)
 - [Azure Key Vault](https://learn.microsoft.com/en-us/azure/key-vault/)
+- [Azure managed identities](https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/overview)
 - [Azure Monitor](https://learn.microsoft.com/en-us/azure/azure-monitor/)
 - [Microsoft Well-Architected Framework](https://learn.microsoft.com/en-us/azure/well-architected/)
 

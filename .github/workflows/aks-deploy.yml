@@ -132,36 +132,16 @@ on:
             azure_subscription: ${{ inputs.aks_subscription || vars.AKS_SUBSCRIPTION }}
 
         - name: Deploy to AKS
-          shell: bash
-          env:
-            AKS_NAME: ${{ inputs.aks_name || vars.AKS_NAME }}
-            AKS_RESOURCE_GROUP: ${{ inputs.aks_resource_group || vars.AKS_RESOURCE_GROUP }}
-            AKS_SUBSCRIPTION: ${{ inputs.aks_subscription || vars.AKS_SUBSCRIPTION }}
-            AKS_NAMESPACE: ${{ inputs.aks_namespace || vars.AKS_NAMESPACE }}
-            KUSTOMIZE_PATH: ${{ inputs.kustomize_path }}
-            IMAGE_REFERENCE: ${{ inputs.image_reference }}
-            CONTAINER_NAME: ${{ inputs.container_name || vars.CONTAINER_NAME }}
-            DEPLOYMENT_NAME: ${{ inputs.deployment_name || vars.DEPLOYMENT_NAME }}
-            KUBECONFIG: ${{ runner.temp }}/aks-kubeconfig-${{ github.run_id }}
-          run: |
-            set -euo pipefail
-            az aks get-credentials \
-              --resource-group "$AKS_RESOURCE_GROUP" \
-              --name "$AKS_NAME" \
-              --subscription "$AKS_SUBSCRIPTION" \
-              --overwrite-existing
-            kubectl apply --namespace "$AKS_NAMESPACE" -k "$KUSTOMIZE_PATH"
-            if [[ -n "$IMAGE_REFERENCE" ]]; then
-              kubectl set image --namespace "$AKS_NAMESPACE" \
-                "deployment/$DEPLOYMENT_NAME" \
-                "$CONTAINER_NAME=$IMAGE_REFERENCE"
-              if ! kubectl rollout status --namespace "$AKS_NAMESPACE" \
-                "deployment/$DEPLOYMENT_NAME" --timeout=5m; then
-                kubectl rollout undo --namespace "$AKS_NAMESPACE" "deployment/$DEPLOYMENT_NAME"
-                echo "Deployment rollout failed; the previous revision was restored." >&2
-                exit 1
-              fi
-            fi
+          uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/azure/aks/deploy@main
+          with:
+            aks_name: ${{ inputs.aks_name || vars.AKS_NAME }}
+            aks_resource_group: ${{ inputs.aks_resource_group || vars.AKS_RESOURCE_GROUP }}
+            aks_subscription: ${{ inputs.aks_subscription || vars.AKS_SUBSCRIPTION }}
+            aks_namespace: ${{ inputs.aks_namespace || vars.AKS_NAMESPACE }}
+            kustomize_path: ${{ inputs.kustomize_path }}
+            image_reference: ${{ inputs.image_reference }}
+            container_name: ${{ inputs.container_name || vars.CONTAINER_NAME }}
+            deployment_name: ${{ inputs.deployment_name || vars.DEPLOYMENT_NAME }}
 
         - name: Clear Azure CLI session
           if: always()

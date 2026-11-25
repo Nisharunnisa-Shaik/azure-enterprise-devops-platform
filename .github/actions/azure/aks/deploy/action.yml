@@ -1,0 +1,82 @@
+name: Deploy to AKS
+description: Apply a Kustomize overlay and roll out an immutable image to AKS
+inputs:
+  aks_name:
+    description: AKS cluster name
+    required: true
+  aks_resource_group:
+    description: Azure resource group containing the AKS cluster
+    required: true
+  aks_subscription:
+    description: Azure subscription containing the AKS cluster
+    required: true
+  aks_namespace:
+    description: Kubernetes namespace for the deployment
+    required: true
+  kustomize_path:
+    description: Path to the Kustomize overlay or base
+    required: true
+  image_reference:
+    description: Optional immutable image reference pinned by sha256 digest
+    required: false
+  container_name:
+    description: Container to update when image_reference is provided
+    required: false
+  deployment_name:
+    description: Kubernetes Deployment to update when image_reference is provided
+    required: false
+  rollout_timeout:
+    description: Maximum time to wait for the Deployment rollout
+    required: false
+    default: 5m
+runs:
+  using: composite
+  steps:
+    - name: Apply Kustomize and deploy image
+      shell: bash
+      env:
+        AKS_NAME: ${{ inputs.aks_name }}
+        AKS_RESOURCE_GROUP: ${{ inputs.aks_resource_group }}
+        AKS_SUBSCRIPTION: ${{ inputs.aks_subscription }}
+        AKS_NAMESPACE: ${{ inputs.aks_namespace }}
+        KUSTOMIZE_PATH: ${{ inputs.kustomize_path }}
+        IMAGE_REFERENCE: ${{ inputs.image_reference }}
+        CONTAINER_NAME: ${{ inputs.container_name }}
+        DEPLOYMENT_NAME: ${{ inputs.deployment_name }}
+        ROLLOUT_TIMEOUT: ${{ inputs.rollout_timeout }}
+        KUBECONFIG: ${{ runner.temp }}/aks-kubeconfig-${{ github.run_id }}
+      run: |
+        set -euo pipefail
+
+        if [[ -n "$IMAGE_REFERENCE" ]]; then
+          if [[ "$IMAGE_REFERENCE" != *@sha256:* ]]; then
+            echo "image_reference must be pinned by digest (repository@sha256:digest)." >&2
+            exit 1
+          fi
+          if [[ -z "$CONTAINER_NAME" || -z "$DEPLOYMENT_NAME" ]]; then
+            echo "container_name and deployment_name are required when image_reference is provided." >&2
+            exit 1
+          fi
+        fi
+
+        az aks get-credentials \
+          --resource-group "$AKS_RESOURCE_GROUP" \
+          --name "$AKS_NAME" \
+          --subscription "$AKS_SUBSCRIPTION" \
+          --overwrite-existing
+
+        kubectl apply --namespace "$AKS_NAMESPACE" -k "$KUSTOMIZE_PATH"
+        if [[ -n "$IMAGE_REFERENCE" ]]; then
+          deployment="deployment/$DEPLOYMENT_NAME"
+          kubectl set image --namespace "$AKS_NAMESPACE" \
+            "$deployment" \
+            "$CONTAINER_NAME=$IMAGE_REFERENCE"
+          if ! kubectl rollout status --namespace "$AKS_NAMESPACE" \
+            "$deployment" --timeout="$ROLLOUT_TIMEOUT"; then
+            echo "Deployment rollout failed; attempting to restore the previous revision." >&2
+            if ! kubectl rollout undo --namespace "$AKS_NAMESPACE" "$deployment"; then
+              echo "Rollback also failed; manual intervention is required." >&2
+            fi
+            exit 1
+          fi
+        fi

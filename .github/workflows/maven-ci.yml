@@ -32,6 +32,14 @@ on:
         description: Key Vault containing build identity credentials
         required: true
         type: string
+      prisma_console_url:
+        description: HTTPS base URL for Prisma Cloud Compute Console
+        required: true
+        type: string
+      twistcli_url:
+        description: HTTPS URL used to download twistcli from Prisma Console
+        required: true
+        type: string
       keyvault_subscription:
         required: false
         type: string
@@ -63,6 +71,14 @@ on:
         required: false
         type: string
         default: AZURE_TENANT_ID
+      prisma_username_secret_name:
+        required: false
+        type: string
+        default: PRISMA_USERNAME
+      prisma_password_secret_name:
+        required: false
+        type: string
+        default: PRISMA_PASSWORD
     secrets:
       sonar_token:
         required: true
@@ -140,3 +156,35 @@ jobs:
           acr_name: ${{ inputs.acr_name }}
           image_name: ${{ inputs.image_name }}
           image_tag: ${{ github.sha }}
+  container_scan:
+    name: Scan dev ACR image with Prisma Cloud
+    runs-on: selfhosted-ubuntu
+    needs: docker_build
+    steps:
+      - name: Scan image with Prisma Cloud
+        id: prisma_scan
+        uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/scan@main
+        with:
+          image_name: ${{ needs.docker_build.outputs.image_reference }}
+          acr_name: ${{ inputs.acr_name }}
+          prisma_console_url: ${{ inputs.prisma_console_url }}
+          twistcli_url: ${{ inputs.twistcli_url }}
+          keyvault_name: ${{ inputs.keyvault_name }}
+          keyvault_subscription: ${{ inputs.keyvault_subscription || inputs.acr_subscription }}
+          azure_subscription: ${{ inputs.acr_subscription }}
+          auth_method: ${{ inputs.auth_method }}
+          msi_id_secret_name: ${{ inputs.msi_id_secret_name }}
+          client_id_secret_name: ${{ inputs.client_id_secret_name }}
+          client_secret_secret_name: ${{ inputs.client_secret_secret_name }}
+          tenant_id_secret_name: ${{ inputs.tenant_id_secret_name }}
+          prisma_username_secret_name: ${{ inputs.prisma_username_secret_name }}
+          prisma_password_secret_name: ${{ inputs.prisma_password_secret_name }}
+          output_file: ${{ runner.temp }}/prisma-scan-results.json
+
+      - name: Upload Prisma scan results
+        if: always() && steps.prisma_scan.outputs.results_file != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: prisma-scan-results-${{ github.run_id }}
+          path: ${{ steps.prisma_scan.outputs.results_file }}
+          if-no-files-found: error

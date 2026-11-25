@@ -7,15 +7,16 @@ Reusable GitHub Actions templates for Java CI, Azure authentication, Azure Conta
 ```text
 .github/
   actions/
+    scan/                 Prisma twistcli image scan and JSON report
     azure/
       acr/build/           ACR build composite action
       akv/secrets/         Fetch secrets from Azure Key Vault
-      aks/deploy/          Empty placeholder action
+      aks/deploy/          Kustomize deploy, image rollout, and rollback action
       login/               Azure CLI login using MSI or service principal
     setup/
       maven-install/       Install Java and Maven on an Ubuntu runner
   workflows/
-    maven-ci.yml           Maven, SonarQube, one ACR image build, and digest output
+    maven-ci.yml           Maven, SonarQube, ACR build, Prisma scan, and digest output
     aks-deploy.yml         Key Vault login, AKS credentials, and Kustomize deployment
 ```
 
@@ -23,13 +24,15 @@ Reusable workflows are called with GitHub Actions `workflow_call`. Application D
 
 ### Current workflows and known gaps
 
-**Maven CI** (`.github/workflows/maven-ci.yml`) checks out the requested repo/ref, installs Java 21 and Maven 3.9.16, runs `mvn clean install` and SonarQube, then builds and pushes one image tagged with the commit SHA. It returns the ACR image digest and immutable image reference to the caller. Required inputs include the source repo/ref, SonarQube project/host, ACR name/image/subscription, and build Key Vault. Required secret: `sonar_token`.
+**Maven CI** (`.github/workflows/maven-ci.yml`) checks out the requested repo/ref, installs Java 21 and Maven 3.9.16, runs `mvn clean install` and SonarQube, then builds and pushes the image to the development ACR. The Prisma composite action downloads `twistcli` from the supplied HTTPS URL with `curl`, pulls and scans that image, writes a JSON report, and uploads the report as a workflow artifact. The workflow returns the image digest and immutable reference to its caller. Required inputs include the source repo/ref, SonarQube details, ACR details, build Key Vault, `prisma_console_url`, and `twistcli_url`. Required GitHub secret: `sonar_token`. Prisma Console credentials are read from Key Vault secrets named `PRISMA_USERNAME` and `PRISMA_PASSWORD` by default. The scan runner also needs Docker CLI/daemon access and network connectivity to Prisma Console.
 
-**AKS deployment** (`.github/workflows/aks-deploy.yml`) is called once per GitHub Environment. It uses the self-hosted runner's system-assigned identity to read target login credentials from Key Vault, gets credentials for the environment's AKS cluster, applies its Kustomize overlay, sets the Deployment image to the supplied immutable digest, and waits for rollout. A failed rollout attempts `kubectl rollout undo`.
+**AKS deployment** (`.github/workflows/aks-deploy.yml`) is called once per GitHub Environment. It uses the self-hosted runner's system-assigned identity to read target login credentials from Key Vault, then delegates cluster access, Kustomize apply, immutable image update, rollout checks, and rollback to `.github/actions/azure/aks/deploy/action.yml`.
 
 Required inputs: `repo_name`, `branch_name`, and `environment_name`. AKS and Key Vault settings can be passed explicitly or supplied as GitHub Environment variables: `AKS_NAME`, `AKS_RESOURCE_GROUP`, `AKS_SUBSCRIPTION`, `AKS_NAMESPACE`, and `KEYVAULT_NAME`. `KEYVAULT_SUBSCRIPTION` is optional; `AUTH_METHOD` selects `msi` or `service_principal` and defaults to `msi`. Key Vault secret names default to `MSI_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, and `AZURE_TENANT_ID`. For MSI target login, the user-assigned identity must be attached to the runner; for service-principal login, its client ID, secret, and tenant ID must be in Key Vault. When an `image_reference` is provided, also set `CONTAINER_NAME` and `DEPLOYMENT_NAME` in that Environment. The runner needs the `selfhosted-ubuntu` label, Azure CLI, kubectl, network access to AKS, and a system-assigned managed identity with **Key Vault Secrets User** access. The target identity needs permission to get AKS credentials and Kubernetes RBAC rights in the namespace. Separately, ensure the AKS kubelet identity has **AcrPull** on the registry.
 
-The application caller at `maven-application/.github/workflows/ci-cd.yml` runs `push`/manual CI, then promotes the same digest through `dev`, `uat`, and `prod`. Set repository variables `SONAR_HOST_URL`, `SONAR_PROJECT_KEY`, `ACR_NAME`, `ACR_IMAGE_NAME`, `ACR_SUBSCRIPTION_ID`, and `BUILD_KEYVAULT_NAME`; optionally set `BUILD_KEYVAULT_SUBSCRIPTION` and `BUILD_AUTH_METHOD` (defaults to `msi`). Set `SONAR_TOKEN` as a GitHub secret. The build runner identity must read the build Key Vault and have **AcrPush** on the registry.
+The application caller at `maven-application/.github/workflows/ci-cd.yml` runs `push`/manual CI. Set repository variables `SONAR_HOST_URL`, `SONAR_PROJECT_KEY`, `ACR_NAME` (the development ACR), `ACR_IMAGE_NAME`, `ACR_SUBSCRIPTION_ID`, `BUILD_KEYVAULT_NAME`, `PRISMA_CONSOLE_URL`, and `PRISMA_TWISTCLI_URL`; optionally set `BUILD_KEYVAULT_SUBSCRIPTION` and `BUILD_AUTH_METHOD` (defaults to `msi`). Set `SONAR_TOKEN` as a GitHub secret. The build identity needs **AcrPush** on the development ACR. The scan identity needs **AcrPull** on that ACR and read access to the two Prisma Console Key Vault secrets.
+
+The target promotion model uses separate development, UAT, and production ACRs: build and scan in the development ACR, deploy to development AKS, then—after developer validation—import the same image digest into the UAT ACR and deploy to UAT. After UAT validation and production approval, import that digest into the production ACR and deploy to production. Each destination ACR and its identity needs its own scoped configuration. The current caller scaffold does not yet implement these cross-ACR imports; it currently passes the development image reference to each deployment, so do not treat UAT/production promotion as complete until that is changed.
 
 Create GitHub Environments named `dev`, `uat`, and `prod`. Set the AKS variables above in each environment; set `SMOKE_TEST_URL` in `dev` and `uat`. Smoke tests run on `selfhosted-ubuntu`, so that runner must be able to reach the application endpoints. Configure required reviewers on `prod` to gate production deployment. The caller fails closed if a smoke-test URL is missing or does not return a successful HTTP response.
 
@@ -43,9 +46,9 @@ The Azure login action retains direct MSI/service-principal inputs for existing 
 
 Use versioned, centrally maintained reusable workflows with stable input/output contracts:
 
-1. **Pull request validation:** checkout, compile, unit/integration tests, SonarQube, dependency and secret checks, IaC validation and policy checks.
-2. **Build once:** build the application and OCI image from the merge commit. Generate an SBOM, scan the image, sign the image digest, and push it to ACR. Publish the immutable digest and evidence as workflow outputs/artifacts.
-3. **Promote, don't rebuild:** deploy the same `image@sha256:digest` to development, staging, then production. Environment-specific Kustomize overlays contain only configuration differences; they must not rebuild or retag different image bytes.
+1. **Pull request validation:** checkout, compile, unit/integration tests, SonarQube, and IaC validation/policy checks when infrastructure changes. GitHub Advanced Security secret scanning/push protection and Dependabot alerts are enabled on each application repository; they are not jobs in the current Maven CI workflow. A Dependency Review action can be added as a separate PR check if required.
+2. **Build once in development ACR:** build the application and OCI image from the merge commit. Run Prisma `twistcli` image scanning and retain its JSON report. Generate an SBOM and sign the digest as those gates are implemented.
+3. **Promote between registries, don't rebuild:** after validation in each environment, import the same image digest from development ACR to UAT ACR, then to production ACR. Deploy each destination's digest to its matching AKS environment; verify the digest after every import. Environment-specific Kustomize overlays contain configuration differences, not rebuilt image bytes.
 4. **Record each promotion:** store commit SHA, image digest, SBOM/signature references, workflow run, approvals, deployment result, and Azure Monitor links together.
 
 ACR Tasks provide cloud-based image builds and support on-demand and trigger-based builds; use the ACR digest as the promotion identity rather than a mutable tag. [ACR Tasks overview](https://learn.microsoft.com/en-us/azure/container-registry/container-registry-tasks-overview)
@@ -64,7 +67,7 @@ Use GitHub environment protection rules for deployment approvals and environment
 
 ### Azure identities and account roles
 
-Prefer GitHub Actions OIDC federation to a Microsoft Entra application or user-assigned managed identity. Give each environment a distinct federated identity and role assignment; do not share production credentials with CI or nonproduction. The current MSI/service-principal composite action is a transition point, not the target identity pattern. [Authenticate GitHub Actions to Azure with OIDC](https://learn.microsoft.com/en-us/azure/developer/github/connect-from-azure-openid-connect)
+Use Azure Managed Service Identity (MSI) from trusted self-hosted runners; OIDC and federated credentials are not used in this design. The runner's system-assigned identity bootstraps Key Vault access, then a scoped user-assigned managed identity can be selected for build or deployment access. Keep build, non-production, and production permissions separate, and assign each identity only the Azure roles and resource scopes it needs. The service-principal path remains available in the composite action for compatibility, but MSI is the standard path. [Azure managed identities](https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/overview)
 
 | Role/group | Responsibility and scope |
 | --- | --- |
@@ -72,7 +75,7 @@ Prefer GitHub Actions OIDC federation to a Microsoft Entra application or user-a
 | Application team | Maintain service code and manifests; deploy to its namespace/resource group using workload-specific identity |
 | Security | Own policy baselines, vulnerability exceptions, signing trust, and periodic evidence review |
 | Production approver/on-call | Approve production promotion and emergency changes; cannot approve their own change alone |
-| Workload identity | CI may push to the designated ACR repository; deploy identity may update only its target namespace/resources; read-only monitoring access where practical |
+| Managed identities | Build MSI may push to the designated ACR; deployment MSI may update only its target namespace/resources; read-only monitoring access where practical |
 
 ### Team extension points
 
@@ -93,9 +96,9 @@ For repository-level implementation details—including `CODEOWNERS`, branch rul
 | Tests and quality | Compile, unit and integration tests; SonarQube quality gate; retain logs and test reports | Existing Maven/Sonar steps are a starting point |
 | IaC | Bicep lint/build, parameter validation, and ARM what-if; reject unreviewed destructive changes | Azure Resource Manager what-if previews expected resource changes without applying them. [Bicep what-if](https://learn.microsoft.com/en-us/azure/azure-resource-manager/bicep/deploy-what-if) |
 | Cloud/Kubernetes policy | Validate resource locations, diagnostic settings, public exposure, encryption, required tags, and AKS pod/security requirements; move from audit to deny only after remediation | Azure Policy compliance and remediation; Azure Policy add-on for AKS. [Azure Policy](https://learn.microsoft.com/en-us/azure/governance/policy/overview), [Azure Policy for AKS](https://learn.microsoft.com/en-us/azure/aks/use-azure-policy) |
-| Secrets | Block committed credentials; use Key Vault at runtime and OIDC for pipeline-to-Azure auth; never print secret values | GitHub secret scanning/push protection plus Azure Key Vault RBAC and Entra federation. [Key Vault RBAC](https://learn.microsoft.com/en-us/azure/key-vault/general/rbac-guide), [OIDC](https://learn.microsoft.com/en-us/azure/developer/github/connect-from-azure-openid-connect) |
-| Dependencies | Review dependency changes, generate an inventory, and fail on unapproved critical/high vulnerabilities or known exploited packages | Dependabot/dependency review in GitHub; Microsoft Defender for Cloud DevOps security for code, secrets, IaC, and dependency posture. [Defender for DevOps](https://learn.microsoft.com/en-us/azure/defender-for-cloud/defender-for-devops-introduction) |
-| Container and SBOM | Generate SPDX or CycloneDX SBOM per image digest; scan image; sign digest; verify signature and SBOM before promotion; block critical vulnerabilities unless a security-approved exception exists | Push to ACR; use Defender for Cloud container vulnerability assessment and retain SBOM/signature references alongside the image. [Container vulnerability management](https://learn.microsoft.com/en-us/azure/defender-for-cloud/agentless-vulnerability-assessment-azure) |
+| Secrets | Enable GHAS secret scanning and push protection in each application repository; use Key Vault and runner MSI for Azure access. These are repository-level controls, not Maven CI jobs. | GitHub Advanced Security repository settings plus Key Vault RBAC and managed identity assignments. [Key Vault RBAC](https://learn.microsoft.com/en-us/azure/key-vault/general/rbac-guide), [Azure managed identities](https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/overview) |
+| Dependencies | Enable the dependency graph and Dependabot alerts/security updates in each application repository. These alerts are repository-level, not Maven CI jobs; use Dependency Review as a separate PR check only if required. | GitHub repository security settings and Dependabot; Microsoft Defender for Cloud DevOps security can add organization-level posture visibility. [Defender for DevOps](https://learn.microsoft.com/en-us/azure/defender-for-cloud/defender-for-devops-introduction) |
+| Container and SBOM | Scan image with Prisma Cloud Compute `twistcli` and retain JSON results; generate SPDX or CycloneDX SBOM; sign digest and verify evidence before promotion | Prisma scan runs against the development ACR image; retain the JSON artifact with the image digest. Defender for Cloud can provide additional registry posture visibility. |
 | Production release | Require staging evidence, production environment approval, and healthy deployment metrics | GitHub protected environment approval; Azure Monitor alert state and dashboard linked in the release record. [Azure Monitor alerts](https://learn.microsoft.com/en-us/azure/azure-monitor/alerts/alerts-overview) |
 
 For AKS, assign Azure Policy initiatives and enforce approved pod configuration at the cluster; for Azure resources, keep policy definitions/assignments in reviewed IaC. Begin new controls in audit mode, fix existing violations, then switch to deny/enforcement with a documented exception path.
@@ -116,8 +119,6 @@ Suggested default progression gates (tune per service SLO and traffic volume):
 - For AKS, require no new crash loops/OOM kills and sustained CPU below 80% and memory below 85% of allocatable capacity.
 - Roll back if a hard SLO is breached once, or another threshold is breached in two consecutive five-minute windows. Stop promotion and page the on-call owner; do not automatically retry a failing version.
 
-Database changes use expand/contract: first add nullable/backward-compatible schema, deploy code compatible with old and new schemas, backfill with observable/restartable jobs, then remove old schema only in a later release after all consumers have migrated. Take and verify backups before destructive changes. App rollback must not depend on reversing an irreversible schema change.
-
 ## 4. Emergency change path
 
 An expedited change is for an active incident or material security risk, not for schedule pressure.
@@ -125,7 +126,7 @@ An expedited change is for an active incident or material security risk, not for
 1. Open or reference an incident/change record with severity, affected service, business impact, and named incident commander.
 2. Obtain approval from the incident commander and service owner; security approves any control exception. The deployer cannot be the sole approver.
 3. Activate Azure privileges just in time through Microsoft Entra PIM with MFA, justification/ticket number, least privilege, and a short activation window (target: 1 hour). Alert on any emergency/break-glass identity use. [Microsoft Entra PIM](https://learn.microsoft.com/en-us/entra/id-governance/privileged-identity-management/pim-configure)
-4. Keep minimum automated gates: compile and focused tests, secret scan, IaC what-if/policy check for infrastructure changes, image vulnerability scan and signature verification, smoke test, and production health monitoring. Only the incident commander plus security may approve a documented gate exception.
+4. Keep minimum pipeline gates: compile and focused tests, IaC what-if/policy checks for infrastructure changes, image vulnerability scan/signature verification, smoke test, and production health monitoring. Keep application-repository GHAS secret scanning/push protection and Dependabot alerts enabled independently; they are not CI stages. Only the incident commander plus security may approve a documented gate exception.
 5. Deploy one immutable image digest to the smallest affected scope; watch the same health thresholds as a standard rollout. Capture commit, digest, test/scan outputs, approval identities, PIM activation, pipeline run, and before/after Azure Monitor signals.
 6. Within one business day, complete the full test/policy suite, remove temporary role assignments and exceptions, reconcile manifests/IaC to the emergency state, rotate any exposed credentials, and record a blameless review and follow-up actions.
 
@@ -142,7 +143,7 @@ Use deployment records from GitHub Actions and incident/availability signals fro
 | Change rework rate | Production deployments requiring corrective deployment within 7 days ÷ all production deployments | Deployment and incident records |
 | Policy compliance | Compliant assigned resources/AKS policy checks ÷ evaluated resources/checks | Azure Policy compliance data |
 | Supply-chain coverage | Production image digests with SBOM, successful scan, and verified signature ÷ deployed image digests | ACR digest and workflow evidence |
-| Identity hygiene | Production workflows using OIDC/managed identity; active exceptions past expiry | Workflow configuration, Entra sign-in/audit logs, exception register |
+| Identity hygiene | Production workflows using approved MSI; active exceptions past expiry | Runner/identity configuration, Entra audit logs, exception register |
 
 Safeguards: publish formulas and time windows; count all production deployments, including emergency changes; do not exclude failed deployments or relabel incidents to improve scores; segment by service and deployment risk; pair speed metrics with reliability/security outcomes; review source records periodically; use metrics for improvement, not individual ranking or quotas. Azure Monitor alerts can trigger response workflows, but an alert alone is not proof of an incident or recovery.
 
@@ -151,7 +152,7 @@ Safeguards: publish formulas and time windows; count all production deployments,
 | Phase | Adoption step | Exit criteria |
 | --- | --- | --- |
 | 0. Discover | Inventory repositories, pipeline variants, service owners, environments, credentials, IaC, deployment targets, and current delivery metrics | Named owner and baseline for every production service |
-| 1. Pilot | Select one low-risk Java service; call reusable Maven/Sonar workflow; store images in ACR; add OIDC, Key Vault, and Azure Monitor; keep current production release as fallback | CI parity, reproducible image digest, documented rollback, no production outage |
+| 1. Pilot | Select one low-risk Java service; call reusable Maven/Sonar workflow; store images in ACR; configure runner MSI, Key Vault, and Azure Monitor; keep current production release as fallback | CI parity, reproducible image digest, documented rollback, no production outage |
 | 2. Shadow controls | Run IaC and Azure Policy in audit mode; generate SBOM/scans and compare with existing checks; do not block teams on untriaged legacy findings | Findings assigned, false positives reviewed, owners and remediation dates agreed |
 | 3. Opt-in promotion | Add staging and production environments, approvals, AKS/App Service progressive deployment, and immutable digest promotion for willing teams | A full low-risk release and rollback demonstrated with evidence |
 | 4. Broad adoption | Onboard teams in waves; publish migration guides and office hours; enforce only controls with tested remediation and exception paths | All production services use versioned templates or have an approved dated exception |

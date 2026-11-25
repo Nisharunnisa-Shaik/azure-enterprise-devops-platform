@@ -1,6 +1,6 @@
 # Repository Controls as Code
 
-This guide describes repository-level controls for protecting source code and release workflows, limiting GitHub Actions permissions, and consuming centrally maintained reusable workflows. It focuses on GitHub controls for this platform repository and its application repositories; Azure RBAC and workload identity are included where they determine pipeline privilege.
+This guide describes repository-level controls for protecting source code and release workflows, limiting GitHub Actions permissions, and consuming centrally maintained reusable workflows. It focuses on GitHub controls for this platform repository and its application repositories; Azure RBAC and managed identities are included where they determine pipeline privilege.
 
 ## What is configured where
 
@@ -82,14 +82,19 @@ jobs:
   deploy:
     permissions:
       contents: read
-      id-token: write # Only when this job uses Azure OIDC federation.
     environment: prod
-    runs-on: ubuntu-latest
+    runs-on: selfhosted-ubuntu
     steps:
+      - name: Authenticate to Azure using MSI
+        uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/azure/login@<reviewed-40-character-commit-sha>
+        with:
+          keyvault_name: ${{ vars.KEYVAULT_NAME }}
+          azure_subscription: ${{ vars.AKS_SUBSCRIPTION }}
+          auth_method: msi
       - run: ./scripts/deploy.sh
 ```
 
-`id-token: write` allows requesting an OIDC token; it does not itself grant Azure access. Azure access is still controlled by the federated identity's trust conditions and Azure RBAC. Do not grant `contents: write`, `packages: write`, or other write scopes to the whole workflow if only one job needs them.
+The deploy job uses the managed identity exposed to the trusted self-hosted runner; it does not request `id-token: write`. GitHub token permissions and Azure MSI permissions are separate: the workflow token does not grant Azure access, and Azure access comes from the managed identity's Azure RBAC assignments. Do not grant `contents: write`, `packages: write`, or other write scopes to the whole workflow if only one job needs them.
 
 For untrusted pull requests:
 
@@ -142,17 +147,21 @@ Declare GitHub Environments in deployment jobs and configure environment protect
 | `uat` | Automatic or service-owner approval, after development validation | Non-production UAT resources only |
 | `prod` | Required reviewers, prevent self-review, and successful UAT evidence | Production resources only |
 
+Use a distinct ACR for each environment. Grant the build MSI `AcrPush` only on the development ACR. A promotion identity should have read access to the source ACR and permission to import into only the next environment's ACR; each AKS environment should pull from its own registry.
+
 Store environment-specific configuration in GitHub Environment variables and secrets, not in workflow source. Put long-lived application secrets in Key Vault rather than workflow YAML. Only jobs that declare the corresponding `environment:` should receive that environment's protected secrets.
 
-For Azure access:
+For Azure access using MSI:
 
-- Prefer GitHub OIDC federation over long-lived service-principal secrets. Restrict each federated credential to the expected organization, repository, branch or GitHub Environment subject; use separate identities for build, non-production deployment, and production deployment.
+- Use the system-assigned identity of a trusted self-hosted runner to bootstrap access to the relevant Key Vault. Grant it only the required secret-read permissions.
+- Where more isolation is needed, use separate user-assigned MSIs for ACR publishing, non-production deployment, and production deployment. Attach only the required identities to the appropriate runner pool and select them explicitly.
 - Assign Azure roles at the narrowest practical scope. A build identity should push only to the required ACR/repository; a deployment identity should access only its target AKS cluster/namespace and required resource group.
 - Keep the AKS kubelet's `AcrPull` permission separate from the deployment identity's Kubernetes permissions.
-- If a self-hosted runner's managed identity is used as a temporary bootstrap, isolate the runner, restrict its group to trusted workflows, and remove broad credentials from the host. Do not run untrusted pull-request jobs on it.
+- Restrict privileged runner groups to trusted workflows. Do not run untrusted pull-request code on a runner that can access MSI, Key Vault, ACR, AKS, or internal networks.
+- For ARC runners on AKS, verify the supported MSI integration and prevent unrelated pods from reaching the node identity endpoint.
 - Require an approved environment for production identity use; do not make production credentials available to CI or development jobs.
 
-The current templates use managed identity/Key Vault bootstrap and should be treated as a transition arrangement until workload identity federation and its Azure RBAC assignments are implemented.
+The current templates use MSI and Key Vault bootstrap. The service-principal option remains for compatibility, but MSI is the standard authentication method in this design.
 
 ## 6. Require meaningful pull-request checks
 
@@ -160,9 +169,9 @@ Configure branch rules to require checks that run on every relevant pull request
 
 1. **Build and tests:** compile, unit/integration tests, and publish test reports.
 2. **Code quality:** SonarQube quality gate and code scanning.
-3. **Secrets and dependencies:** secret scanning/push protection, dependency review, and vulnerability alerts or updates.
+3. **Repository security settings:** enable GHAS secret scanning/push protection and Dependabot alerts/security updates in each application repository. These operate at repository level and are not CI workflow jobs. Add Dependency Review as a separate pull-request check only if the team wants it as a required status check.
 4. **Infrastructure and manifests:** Bicep/Terraform validation, policy checks, Kubernetes/Kustomize validation, and detection of unsafe public exposure or privileged containers.
-5. **Supply chain:** container vulnerability scan, SBOM generation, and image signing/attestation; verify these against the immutable digest before promotion.
+5. **Supply chain:** Prisma Cloud Compute `twistcli` image scan, SBOM generation, and image signing/attestation; retain the scan JSON and verify evidence against the immutable digest before promotion.
 6. **Deployment evidence:** smoke tests, rollout health, approval record, commit SHA, and image digest for each environment.
 
 Start new checks in report-only mode where necessary to measure existing findings, then make them blocking after owners have remediation guidance. Exceptions should have an owner, reason, compensating control, approval, and expiry date; they should not be implemented as a silent permanent bypass.
@@ -171,8 +180,8 @@ Protect status-check identity: use stable workflow/job names, avoid reusing one 
 
 ## 7. Repository security and maintenance
 
-- Enable secret scanning and push protection where available; rotate any credential that is committed even if the commit is later reverted.
-- Enable Dependabot alerts and security updates; use dependency review to flag risky additions in pull requests.
+- Enable GHAS secret scanning and push protection in each source application repository; these are GitHub repository controls, not CI steps. Rotate any credential that is exposed even if the commit is later reverted.
+- Enable the dependency graph, Dependabot alerts, and security updates in each source application repository; alerts are repository-level. Add Dependency Review as a separate PR workflow only if it is intended to gate merges.
 - Enable code scanning for supported languages and review alerts as owned work, not as an ignored dashboard.
 - Keep workflow dependencies and runner images updated. Use a scheduled review/update workflow for pinned action SHAs.
 - Limit repository administrators and Actions runner administration to the smallest practical group. Use organization teams rather than individual grants where possible.
@@ -200,5 +209,5 @@ Protect status-check identity: use stable workflow/job names, avoid reusing one 
 - [GitHub Actions security hardening](https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions)
 - [Reusable workflows](https://docs.github.com/en/actions/sharing-automations/reusing-workflows)
 - [Deployment environments](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments)
-- [Authenticate GitHub Actions to Azure with OIDC](https://learn.microsoft.com/en-us/azure/developer/github/connect-from-azure-openid-connect)
+- [Azure managed identities](https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/overview)
 - [Azure RBAC scope](https://learn.microsoft.com/en-us/azure/role-based-access-control/scope-overview)

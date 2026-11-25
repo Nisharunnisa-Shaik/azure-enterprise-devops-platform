@@ -1,0 +1,178 @@
+name: Scan container image with Prisma Cloud
+description: Download twistcli, scan an ACR image, and return the JSON report file
+inputs:
+  image_name:
+    description: Fully qualified image reference, preferably pinned by digest
+    required: true
+  acr_name:
+    description: ACR registry name from which the image is pulled
+    required: true
+  prisma_console_url:
+    description: HTTPS base URL for Prisma Cloud Compute Console
+    required: true
+  twistcli_url:
+    description: HTTPS URL used to download twistcli from the Prisma Console
+    required: true
+  keyvault_name:
+    description: Key Vault containing the Prisma Console username and password
+    required: true
+  keyvault_subscription:
+    description: Subscription containing Key Vault; defaults to azure_subscription
+    required: false
+  azure_subscription:
+    description: Subscription containing the target identity and ACR
+    required: true
+  auth_method:
+    description: Azure login method after runner MSI bootstrap
+    required: false
+    default: msi
+  msi_id_secret_name:
+    description: Key Vault secret name containing the target managed identity client ID
+    required: false
+    default: MSI_ID
+  client_id_secret_name:
+    description: Key Vault secret name containing the service principal client ID
+    required: false
+    default: AZURE_CLIENT_ID
+  client_secret_secret_name:
+    description: Key Vault secret name containing the service principal client secret
+    required: false
+    default: AZURE_CLIENT_SECRET
+  tenant_id_secret_name:
+    description: Key Vault secret name containing the service principal tenant ID
+    required: false
+    default: AZURE_TENANT_ID
+  prisma_username_secret_name:
+    description: Key Vault secret name containing the Prisma Console username
+    required: false
+    default: PRISMA_USERNAME
+  prisma_password_secret_name:
+    description: Key Vault secret name containing the Prisma Console password
+    required: false
+    default: PRISMA_PASSWORD
+  output_file:
+    description: JSON report path relative to the workspace or an absolute path
+    required: false
+    default: prisma-scan-results.json
+outputs:
+  results_file:
+    description: Absolute path to the Prisma JSON scan report
+    value: ${{ steps.scan_image.outputs.results_file }}
+  scan_exit_code:
+    description: twistcli exit code; non-zero indicates policy failure or scan error
+    value: ${{ steps.scan_image.outputs.scan_exit_code }}
+runs:
+  using: composite
+  steps:
+    - name: Login to Azure using managed identity
+      uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/azure/login@main
+      with:
+        keyvault_name: ${{ inputs.keyvault_name }}
+        keyvault_subscription: ${{ inputs.keyvault_subscription || inputs.azure_subscription }}
+        azure_subscription: ${{ inputs.azure_subscription }}
+        auth_method: ${{ inputs.auth_method }}
+        msi_id_secret_name: ${{ inputs.msi_id_secret_name }}
+        client_id_secret_name: ${{ inputs.client_id_secret_name }}
+        client_secret_secret_name: ${{ inputs.client_secret_secret_name }}
+        tenant_id_secret_name: ${{ inputs.tenant_id_secret_name }}
+
+    - name: Download twistcli and scan image
+      id: scan_image
+      shell: bash
+      env:
+        IMAGE_NAME: ${{ inputs.image_name }}
+        ACR_NAME: ${{ inputs.acr_name }}
+        PRISMA_CONSOLE_URL: ${{ inputs.prisma_console_url }}
+        TWISTCLI_URL: ${{ inputs.twistcli_url }}
+        KEYVAULT_NAME: ${{ inputs.keyvault_name }}
+        PRISMA_USERNAME_SECRET_NAME: ${{ inputs.prisma_username_secret_name }}
+        PRISMA_PASSWORD_SECRET_NAME: ${{ inputs.prisma_password_secret_name }}
+        OUTPUT_FILE: ${{ inputs.output_file }}
+      run: |
+        set -euo pipefail
+
+        for name in IMAGE_NAME ACR_NAME KEYVAULT_NAME PRISMA_USERNAME_SECRET_NAME PRISMA_PASSWORD_SECRET_NAME OUTPUT_FILE; do
+          if [[ -z "${!name}" ]]; then
+            echo "Missing required Prisma scan setting: $name" >&2
+            exit 1
+          fi
+        done
+
+        for url_name in PRISMA_CONSOLE_URL TWISTCLI_URL; do
+          if [[ "${!url_name}" != https://* ]]; then
+            echo "$url_name must use HTTPS." >&2
+            exit 1
+          fi
+        done
+
+        fetch_keyvault_secret() {
+          local secret_name="$1"
+          local secret_value
+          secret_value=$(az keyvault secret show \
+            --vault-name "$KEYVAULT_NAME" \
+            --name "$secret_name" \
+            --query value \
+            --output tsv)
+          if [[ -z "$secret_value" ]]; then
+            echo "Key Vault secret '$secret_name' is empty." >&2
+            return 1
+          fi
+          printf '%s' "$secret_value"
+        }
+
+        prisma_username=$(fetch_keyvault_secret "$PRISMA_USERNAME_SECRET_NAME")
+        prisma_password=$(fetch_keyvault_secret "$PRISMA_PASSWORD_SECRET_NAME")
+        echo "::add-mask::$prisma_username"
+        echo "::add-mask::$prisma_password"
+
+        if [[ "$OUTPUT_FILE" = /* ]]; then
+          results_file="$OUTPUT_FILE"
+        else
+          results_file="$GITHUB_WORKSPACE/$OUTPUT_FILE"
+        fi
+        mkdir -p "$(dirname "$results_file")"
+        rm -f -- "$results_file"
+
+        az acr login --name "$ACR_NAME"
+        docker pull "$IMAGE_NAME"
+
+        twistcli_path="$RUNNER_TEMP/twistcli"
+        curl \
+          --fail \
+          --silent \
+          --show-error \
+          --location \
+          --proto '=https' \
+          --proto-redir '=https' \
+          --connect-timeout 10 \
+          --max-time 120 \
+          --retry 3 \
+          --retry-delay 2 \
+          --user "$prisma_username:$prisma_password" \
+          --output "$twistcli_path" \
+          "$TWISTCLI_URL"
+        if [[ ! -s "$twistcli_path" ]]; then
+          echo "twistcli download returned an empty file." >&2
+          exit 1
+        fi
+        chmod 700 "$twistcli_path"
+
+        scan_exit_code=0
+        "$twistcli_path" images scan \
+          --address "$PRISMA_CONSOLE_URL" \
+          --user "$prisma_username" \
+          --password "$prisma_password" \
+          --output-file "$results_file" \
+          "$IMAGE_NAME" || scan_exit_code=$?
+
+        if [[ ! -s "$results_file" ]]; then
+          echo "Prisma scan did not produce a JSON report at '$results_file'." >&2
+          exit 1
+        fi
+
+        echo "results_file=$results_file" >> "$GITHUB_OUTPUT"
+        echo "scan_exit_code=$scan_exit_code" >> "$GITHUB_OUTPUT"
+        if [[ "$scan_exit_code" -ne 0 ]]; then
+          echo "Prisma scan exited with code $scan_exit_code; review the JSON report." >&2
+          exit "$scan_exit_code"
+        fi
