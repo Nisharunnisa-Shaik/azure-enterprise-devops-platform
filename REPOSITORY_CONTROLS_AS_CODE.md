@@ -184,9 +184,8 @@ Configure branch rules to require checks that run on every relevant pull request
 1. **Build and tests:** compile, unit/integration tests, and publish test reports.
 2. **Code quality:** SonarQube quality gate and code scanning.
 3. **Repository security settings:** enable GHAS secret scanning/push protection and Dependabot alerts/security updates in each application repository. These operate at repository level and are not CI workflow jobs. Add Dependency Review as a separate pull-request check only if the team wants it as a required status check.
-4. **Infrastructure and manifests:** Bicep/Terraform validation, policy checks, Kubernetes/Kustomize validation, and detection of unsafe public exposure or privileged containers.
-5. **Supply chain:** Prisma Cloud Compute `twistcli` image scan, SBOM generation, and image signing/attestation; retain the scan JSON and verify evidence against the immutable digest before promotion.
-6. **Deployment evidence:** smoke tests, rollout health, approval record, commit SHA, and image digest for each environment.
+4. **Supply chain:** Prisma Cloud Compute `twistcli` image scan, SBOM generation, and image signing/attestation; retain the scan JSON and verify evidence against the immutable digest before promotion.
+5. **Deployment evidence:** smoke tests, rollout health, approval record, commit SHA, and image digest for each environment.
 
 Start new checks in report-only mode where necessary to measure existing findings, then make them blocking after owners have remediation guidance. Exceptions should have an owner, reason, compensating control, approval, and expiry date; they should not be implemented as a silent permanent bypass.
 

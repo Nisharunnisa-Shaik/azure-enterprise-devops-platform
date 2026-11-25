@@ -137,34 +137,35 @@ The platform connects source control, reusable GitHub Actions workflows, ACR, an
 | Platform/templates organization | Platform Engineering | Reusable workflows, composite actions, security policies, runner templates, samples, and documentation |
 | Project organization | Application teams | Application source, Kustomize/Helm configuration, service tests, and environment-specific values |
 
-### 5.2 Standard CI pipeline
+### 5.2 Standard CI build pipeline
 
 ```mermaid
 flowchart LR
     A[Checkout source] --> B[Build and unit tests]
     B --> C[Code quality and SAST]
-    C --> D[Infrastructure policy checks when needed]
-    D --> E[Build in Dev ACR]
-    E --> F[Prisma twistcli scan and JSON report]
-    F --> G[SBOM and image signing]
-    G --> H[Record immutable digest and evidence]
+    C --> D[Build in Dev ACR]
+    D --> E[Prisma twistcli scan and JSON report]
+    E --> F[SBOM and image signing]
+    F --> G[Record immutable digest and evidence]
 ```
 
-Secret scanning/push protection and Dependabot alerts are enabled in each source application repository through GitHub Advanced Security/repository security settings; they are not stages in this CI workflow. A Dependency Review action may be configured as a separate required pull-request check. The Prisma `twistcli` action scans the image in the development ACR and uploads its JSON result as a workflow artifact. CI-required checks fail closed: an image is not promoted if a mandatory test, policy, or image security gate fails. Approved exceptions must have an owner, justification, compensating control, and expiry.
+Secret scanning/push protection and Dependabot alerts are enabled in each source application repository through GitHub Advanced Security/repository security settings; they are not stages in this CI workflow. A Dependency Review action may be configured as a separate required pull-request check. The Prisma `twistcli` action scans the image in the development ACR and uploads its JSON result as a workflow artifact. CI-required checks fail closed: an image is not promoted if a mandatory test, code-quality, or image-security gate fails. Approved exceptions must have an owner, justification, compensating control, and expiry.
 
-### 5.3 Standard CD pipeline
+### 5.3 Standard CD promotion and deployment pipeline
 
 ```mermaid
 flowchart LR
     A[Deploy from Dev ACR to DEV AKS] --> B[Rollout and developer validation]
-    B --> C[Import digest into UAT ACR]
+    B --> C[Import digest into UAT ACR using UAT MSI]
     C --> D[Deploy from UAT ACR to UAT AKS]
     D --> E[UAT validation]
     E --> F[Production approval]
-    F --> G[Import digest into PROD ACR]
+    F --> G[Import digest into PROD ACR using PROD MSI]
     G --> H[Deploy from PROD ACR to PROD AKS]
     H --> I[Monitor and retain rollback version]
 ```
+
+The CI build and scan produce one immutable development-ACR digest. Promotion is a release/CD stage after validation: the UAT MSI imports Dev to UAT, then the production approval gates the production MSI importing UAT to Prod. Each import is by digest and must be verified before deployment. For same-tenant ACR imports, grant the destination environment MSI **Container Registry Data Importer and Data Reader** on both the source and destination registries; keep the build MSI limited to pushing to Dev. Each AKS kubelet identity separately receives pull access to its own ACR.
 
 ### 5.4 Reusable workflow contract
 
@@ -191,7 +192,7 @@ For detailed repository implementation guidance, see [Repository Controls as Cod
 | Reusable workflow governance | Pin to reviewed revisions; use explicit inputs/secrets; prevent mandatory checks from being skipped | Workflow reference and run evidence |
 | Environment protection | Require production approvers, prevent self-review, and restrict deployment branches | Deployment history and approval records |
 | Repository security posture | Enable GHAS secret scanning/push protection and Dependabot alerts in each source application repository; these are not Maven CI jobs | Repository security settings and GHAS/Dependabot alerts |
-| CI security gates | Require tests, SonarQube, container/IaC checks, and any separately configured code or dependency review jobs | Required status checks and scan reports |
+| CI security gates | Require tests, SonarQube, container checks, and any separately configured code or dependency review jobs | Required status checks and scan reports |
 
 Branch patterns should be agreed with teams; a baseline is `main`, `develop`, `release/*`, and `hotfix/*`. Only make checks mandatory after confirming they run reliably for all relevant pull requests.
 
@@ -213,7 +214,6 @@ The normal application workflow calls the reusable AKS workflow for `prod` after
 | Dependency alerting | Dependabot dependency graph, alerts, and security updates at application-repository level; optional Dependency Review PR check |
 | Secret detection | GHAS secret scanning and push protection enabled at application-repository level, outside the Maven CI workflow |
 | Container scanning | Prisma Cloud Compute `twistcli`; retain the JSON scan report as a workflow artifact |
-| Infrastructure scanning | Checkov or an equivalent policy scanner |
 | SBOM generation | Syft; produce SPDX or CycloneDX for each image digest |
 | Image signing | Cosign; verify the signature before promotion |
 
@@ -337,7 +337,7 @@ Publish formulas and time windows. Count emergency and failed releases consisten
 
 | Phase | Activities | Exit criteria |
 | --- | --- | --- |
-| **1. Discovery** | Inventory repositories, pipelines, owners, environments, credentials, IaC, and baseline metrics | Each production service has an owner and migration priority |
+| **1. Discovery** | Inventory repositories, pipelines, owners, environments, credentials, deployment manifests, and baseline metrics | Each production service has an owner and migration priority |
 | **2. Platform readiness** | Publish reusable workflows, runner platform, onboarding guide, and security controls | Templates and security checks pass representative validation |
 | **3. Pilot adoption** | Onboard five representative applications; validate build, deployment, security checks, and rollback | Pilot release and rollback complete with evidence |
 | **4. Migration waves** | Wave 1: 10 low-complexity apps; Wave 2: 15 medium-complexity apps; Wave 3: 15 critical production apps | Each wave meets agreed service-level onboarding criteria |
@@ -355,7 +355,7 @@ Project teams receive an onboarding guide, deployment runbook, troubleshooting g
 | --- | --- |
 | Functional | Build, tests, deployment, artifact digest consistency, and environment promotion |
 | Source-repository security | GHAS secret scanning/push protection and Dependabot alerts enabled on the application repository |
-| CI security | SonarQube, container/IaC scans, signature verification, and any explicitly configured PR review jobs |
+| CI security | SonarQube, container scans, signature verification, and any explicitly configured PR review jobs |
 | Operational | Canary progression, rollback, monitoring alerts, and evidence retention |
 | Governance | Pull-request approval, CODEOWNERS enforcement, required checks, environment approvals, and bypass audit |
 
