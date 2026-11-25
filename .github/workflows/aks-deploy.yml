@@ -40,79 +40,79 @@ on:
       image_reference:
         description: Immutable image reference in the target environment's ACR
         value: ${{ jobs.aks_deploy.outputs.image_reference }}
-  jobs:
-    aks_deploy:
-      environment: ${{ inputs.environment_name }}
-      runs-on: selfhosted-ubuntu
-      outputs:
-        image_reference: ${{ steps.promote_image.outputs.image_reference || inputs.image_reference }}
-      steps:
-        - name: Checkout Code
-          uses: actions/checkout@v4
-          with:
-            repository: ${{ inputs.repo_name }}
-            ref: ${{ inputs.branch_name }}
+jobs:
+  aks_deploy:
+    environment: ${{ inputs.environment_name }}
+    runs-on: selfhosted-ubuntu
+    outputs:
+      image_reference: ${{ steps.promote_image.outputs.image_reference || inputs.image_reference }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.repo_name }}
+          ref: ${{ inputs.branch_name }}
 
-        - name: Load deployment configuration
-          id: deployment_config
-          uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/config/load-environment@main
-          with:
-            config_file: ${{ inputs.deployment_config_file }}
-            environment_name: ${{ inputs.environment_name }}
-            source_environment: ${{ inputs.source_environment }}
-            image_reference: ${{ inputs.image_reference }}
-            require_image_registry_match: ${{ inputs.require_image_registry_match && inputs.source_environment == '' }}
-            require_smoke_test: ${{ inputs.require_smoke_test }}
+      - name: Load deployment configuration
+        id: deployment_config
+        uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/config/load-environment@main
+        with:
+          config_file: ${{ inputs.deployment_config_file }}
+          environment_name: ${{ inputs.environment_name }}
+          source_environment: ${{ inputs.source_environment }}
+          image_reference: ${{ inputs.image_reference }}
+          require_image_registry_match: ${{ inputs.require_image_registry_match && inputs.source_environment == '' }}
+          require_smoke_test: ${{ inputs.require_smoke_test }}
 
-        - name: Login to Azure
-          uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/azure/login@main
-          with:
-            keyvault_name: ${{ steps.deployment_config.outputs.keyvault_name }}
-            keyvault_subscription: ${{ steps.deployment_config.outputs.keyvault_subscription || steps.deployment_config.outputs.aks_subscription }}
-            auth_method: ${{ steps.deployment_config.outputs.auth_method }}
-            msi_id_secret_name: ${{ steps.deployment_config.outputs.msi_id_secret_name }}
-            client_id_secret_name: ${{ steps.deployment_config.outputs.client_id_secret_name }}
-            client_secret_secret_name: ${{ steps.deployment_config.outputs.client_secret_secret_name }}
-            tenant_id_secret_name: ${{ steps.deployment_config.outputs.tenant_id_secret_name }}
-            azure_subscription: ${{ steps.deployment_config.outputs.aks_subscription }}
+      - name: Login to Azure
+        uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/azure/login@main
+        with:
+          keyvault_name: ${{ steps.deployment_config.outputs.keyvault_name }}
+          keyvault_subscription: ${{ steps.deployment_config.outputs.keyvault_subscription || steps.deployment_config.outputs.aks_subscription }}
+          auth_method: ${{ steps.deployment_config.outputs.auth_method }}
+          msi_id_secret_name: ${{ steps.deployment_config.outputs.msi_id_secret_name }}
+          client_id_secret_name: ${{ steps.deployment_config.outputs.client_id_secret_name }}
+          client_secret_secret_name: ${{ steps.deployment_config.outputs.client_secret_secret_name }}
+          tenant_id_secret_name: ${{ steps.deployment_config.outputs.tenant_id_secret_name }}
+          azure_subscription: ${{ steps.deployment_config.outputs.aks_subscription }}
 
-        - name: Promote image into target ACR
-          id: promote_image
-          if: ${{ inputs.source_environment != '' }}
-          uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/azure/acr/promote@main
-          with:
-            source_image_reference: ${{ inputs.image_reference }}
-            source_acr_login_server: ${{ steps.deployment_config.outputs.source_acr_login_server }}
-            source_acr_resource_id: ${{ steps.deployment_config.outputs.source_acr_resource_id }}
-            target_acr_name: ${{ steps.deployment_config.outputs.acr_name }}
-            target_acr_login_server: ${{ steps.deployment_config.outputs.acr_login_server }}
-            target_acr_subscription: ${{ steps.deployment_config.outputs.acr_subscription }}
+      - name: Promote image into target ACR
+        id: promote_image
+        if: ${{ inputs.source_environment != '' }}
+        uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/azure/acr/promote@main
+        with:
+          source_image_reference: ${{ inputs.image_reference }}
+          source_acr_login_server: ${{ steps.deployment_config.outputs.source_acr_login_server }}
+          source_acr_resource_id: ${{ steps.deployment_config.outputs.source_acr_resource_id }}
+          target_acr_name: ${{ steps.deployment_config.outputs.acr_name }}
+          target_acr_login_server: ${{ steps.deployment_config.outputs.acr_login_server }}
+          target_acr_subscription: ${{ steps.deployment_config.outputs.acr_subscription }}
 
-        - name: Deploy to AKS
-          uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/azure/aks/deploy@main
-          with:
-            aks_name: ${{ steps.deployment_config.outputs.aks_name }}
-            aks_resource_group: ${{ steps.deployment_config.outputs.aks_resource_group }}
-            aks_subscription: ${{ steps.deployment_config.outputs.aks_subscription }}
-            aks_namespace: ${{ steps.deployment_config.outputs.aks_namespace }}
-            kustomize_path: ${{ steps.deployment_config.outputs.kustomize_path }}
-            image_reference: ${{ steps.promote_image.outputs.image_reference || inputs.image_reference }}
-            container_name: ${{ steps.deployment_config.outputs.container_name }}
-            deployment_name: ${{ steps.deployment_config.outputs.deployment_name }}
+      - name: Deploy to AKS
+        uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/azure/aks/deploy@main
+        with:
+          aks_name: ${{ steps.deployment_config.outputs.aks_name }}
+          aks_resource_group: ${{ steps.deployment_config.outputs.aks_resource_group }}
+          aks_subscription: ${{ steps.deployment_config.outputs.aks_subscription }}
+          aks_namespace: ${{ steps.deployment_config.outputs.aks_namespace }}
+          kustomize_path: ${{ steps.deployment_config.outputs.kustomize_path }}
+          image_reference: ${{ steps.promote_image.outputs.image_reference || inputs.image_reference }}
+          container_name: ${{ steps.deployment_config.outputs.container_name }}
+          deployment_name: ${{ steps.deployment_config.outputs.deployment_name }}
 
-        - name: Verify deployment with smoke test
-          if: ${{ inputs.require_smoke_test }}
-          uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/azure/aks/smoke-test@main
-          with:
-            environment_name: ${{ inputs.environment_name }}
-            smoke_test_url: ${{ steps.deployment_config.outputs.smoke_test_url }}
-            rollback_on_failure: "true"
-            aks_namespace: ${{ steps.deployment_config.outputs.aks_namespace }}
-            deployment_name: ${{ steps.deployment_config.outputs.deployment_name }}
-            kubeconfig_path: ${{ runner.temp }}/aks-kubeconfig-${{ github.run_id }}
+      - name: Verify deployment with smoke test
+        if: ${{ inputs.require_smoke_test }}
+        uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/azure/aks/smoke-test@main
+        with:
+          environment_name: ${{ inputs.environment_name }}
+          smoke_test_url: ${{ steps.deployment_config.outputs.smoke_test_url }}
+          rollback_on_failure: "true"
+          aks_namespace: ${{ steps.deployment_config.outputs.aks_namespace }}
+          deployment_name: ${{ steps.deployment_config.outputs.deployment_name }}
+          kubeconfig_path: ${{ runner.temp }}/aks-kubeconfig-${{ github.run_id }}
 
-        - name: Clear Azure CLI session
-          if: always()
-          uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/azure/aks/cleanup@main
-          with:
-            kubeconfig_path: ${{ runner.temp }}/aks-kubeconfig-${{ github.run_id }}
+      - name: Clear Azure CLI session
+        if: always()
+        uses: Nisharunnisa-Shaik/azure-enterprise-devops-platform/.github/actions/azure/aks/cleanup@main
+        with:
+          kubeconfig_path: ${{ runner.temp }}/aks-kubeconfig-${{ github.run_id }}

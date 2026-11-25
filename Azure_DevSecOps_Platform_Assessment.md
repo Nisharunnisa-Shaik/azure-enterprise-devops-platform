@@ -66,7 +66,7 @@ The platform standardizes mandatory controls while leaving application code, ser
 | Assumptions | Exclusions |
 | --- | --- |
 | GitHub Enterprise is the source control platform. | Azure landing-zone implementation. |
-| AKS hosts containerized workloads. | Application-level architecture design. |
+| AKS is the current container platform; Azure App Service is covered as a second compute type for eligible web workloads. | App Service deployment workflow implementation and application-level architecture design. |
 | ACR stores trusted container artifacts. | Enterprise network architecture. |
 | GitHub Advanced Security is available. | Disaster recovery beyond deployment rollback. |
 | Azure Key Vault is the secrets platform. | Application-specific business logic and SLOs. |
@@ -128,6 +128,18 @@ The platform connects source control, reusable GitHub Actions workflows, ACR, an
 
 **Figure 4. End-to-end Azure DevSecOps platform architecture**
 
+### 4.5 Production Environment evidence
+
+The following repository-setting screenshots are included with the architecture diagrams as evidence of the current production Environment configuration. They are point-in-time captures, not a claim that the settings have since been changed.
+
+![Production Environment deployment branches and tags](docs/evidence/prod-deployment-branches.png)
+
+**Figure 5. Production Environment deployment branch/tag rules.** `main` currently matches one branch; `hotfix/*`, `release/*`, and `tag/*` currently match no branches or tags. The wildcard rules would allow matching future refs. Remove them if production deployment must be restricted to `main` only.
+
+![Production Environment approval and bypass settings](docs/evidence/prod-approval-settings.png)
+
+**Figure 6. Production Environment approval rules.** Required reviewers and prevent-self-review are enabled. Administrator bypass is also enabled in this capture, so the setting must be turned off and a new screenshot captured before claiming that production protections cannot be bypassed.
+
 ## 5. Platform design
 
 ### 5.1 Repository ownership model
@@ -136,6 +148,21 @@ The platform connects source control, reusable GitHub Actions workflows, ACR, an
 | --- | --- | --- |
 | Platform/templates organization | Platform Engineering | Reusable workflows, composite actions, security policies, runner templates, samples, and documentation |
 | Project organization | Application teams | Application source, Kustomize/Helm configuration, service tests, and environment-specific values |
+
+#### Human access and decision rights
+
+Assign GitHub organization teams to repositories using the minimum access needed. Keep repository administration separate from routine code review and deployment approval.
+
+| Persona | Minimum GitHub access | Responsibilities | Guardrails |
+| --- | --- | --- | --- |
+| Platform/DevOps team | `Maintain` on the platform/templates repository; `Write` on application repositories | Own reusable workflows and actions, runner templates, platform standards, and workflow onboarding; review owned files through `CODEOWNERS` | Do not use shared administrator access for day-to-day changes; protected branches and required checks still apply |
+| Developer | `Write` on the application repository | Commit and push feature branches, open pull requests, and respond to review feedback | No direct updates to protected branches; merging requires the configured reviews and checks |
+| Lead developer | `Write` on the application repository; listed as a `CODEOWNERS` reviewer for owned application paths | Review and approve pull requests for the application; confirm required checks before merge | Approval does not grant repository administration or production-environment bypass |
+| Reader | `Read` on the repository | View and clone code and inspect pull requests | Cannot push commits or merge changes |
+| Production approver | `Read` on the application repository and configured as a required reviewer for `prod` | Approve or reject a production deployment in the GitHub Environment | Approval-only: no code-write or merge permission; keep the approver separate from repository administrators/organization owners, prevent self-review, and disable administrator bypass |
+| Repository administrator | `Admin`, limited to a small named owner group | Configure repository access, branch rulesets, Actions policy, and Environment protection | Not a routine developer or approver role; audit administrative changes and keep production bypass disabled |
+
+GitHub Environment required reviewers can have `Read` access; only one configured reviewer needs to approve a deployment. This allows a production approver to approve the deployment without receiving code-write permission. Keep the approver separate from repository administrators and organization owners, whose broader access can undermine the intended separation of duties.
 
 ### 5.2 Standard CI build pipeline
 
@@ -165,7 +192,7 @@ flowchart LR
     H --> I[Monitor and retain rollback version]
 ```
 
-The CI build and scan produce one immutable development-ACR digest. Promotion is a release/CD stage after validation: the UAT MSI imports Dev to UAT, then the production approval gates the production MSI importing UAT to Prod. Each import is by digest and must be verified before deployment. For same-tenant ACR imports, grant the destination environment MSI **Container Registry Data Importer and Data Reader** on both the source and destination registries; keep the build MSI limited to pushing to Dev. Each AKS kubelet identity separately receives pull access to its own ACR.
+The CI build and scan produce one immutable development-ACR digest. Standard promotion is a release/CD stage after validation: the UAT MSI imports Dev to UAT, then the production approval gates the production MSI importing UAT to Prod. The emergency `build_fix` path instead smoke-tests the image in Dev, then the protected production job imports the same digest directly from Dev to Prod. Each import is by digest and must be verified before deployment. For same-tenant ACR imports, grant the destination environment MSI **Container Registry Data Importer and Data Reader** on both the source and destination registries; the production MSI therefore needs source access to both UAT (standard releases) and Dev (emergency fixes). Keep the build MSI limited to pushing to Dev. Each AKS kubelet identity separately receives pull access to its own ACR.
 
 ### 5.4 Reusable workflow contract
 
@@ -201,21 +228,24 @@ Branch patterns should be agreed with teams; a baseline is `main`, `develop`, `r
 Create environments separately in each application repository under **Settings → Environments → New environment**. Create `dev`, `uat`, and `prod` before enabling deployment workflows; an environment used before protection is configured may not pause for approval.
 
 - Store non-secret AKS, Key Vault, namespace, authentication mode, Key Vault secret names, ACR login server, workload names, Kustomize overlay, and smoke-test URL for each environment in the application repository's `configuration/maven-config.yaml`. The config action reads the selected environment; leave secret values in Key Vault.
-- In `prod` → **Deployment protection rules**, add designated release/on-call reviewers and enable **Prevent self-review**. At least one configured reviewer must approve the deployment. Restrict deployment branches and tags to the protected `main` branch.
+- In `prod` → **Deployment protection rules**, add designated approval-only reviewers (they need only `Read` repository access) and enable **Prevent self-review**. At least one configured reviewer must approve the deployment. Disable **Allow administrators to bypass configured protection rules** when the policy requires no bypass. Restrict deployment branches/tags to the approved release refs; remove unused wildcard rules if production is intended to be `main`-only.
 - The GitHub Environment is the approval boundary, not the source of AKS settings. Do not put Azure credentials in GitHub Environment secrets. The runner's system-assigned MSI bootstraps Key Vault access; target identity credentials remain in Key Vault.
 
-The normal application workflow calls the reusable AKS workflow for `prod` after UAT validation. That reusable job declares the `prod` GitHub Environment, so GitHub pauses it for the configured approval. The manual emergency workflow uses that same `prod` Environment and approval rule; it does not bypass the production reviewers.
+The normal application workflow calls the reusable AKS workflow for `prod` after UAT validation. That reusable job declares the `prod` GitHub Environment, so GitHub pauses it for the configured approval. The emergency rollback path uses the same approval. For a newly built emergency fix, the workflow first runs CI, deploys the scanned digest to Dev, and smoke-tests it; the protected `prod` job then imports the same digest from Dev to the production ACR before deployment. This expedited path skips UAT; the normal release flow still requires UAT validation. Neither emergency path bypasses production reviewers. Current Environment screenshots are Figures 5 and 6 in Section 4.5.
 
 ### 6.2 Security controls
 
-| Control | Example implementation |
-| --- | --- |
-| SAST | GitHub CodeQL |
-| Dependency alerting | Dependabot dependency graph, alerts, and security updates at application-repository level; optional Dependency Review PR check |
-| Secret detection | GHAS secret scanning and push protection enabled at application-repository level, outside the Maven CI workflow |
-| Container scanning | Prisma Cloud Compute `twistcli`; retain the JSON scan report as a workflow artifact |
-| SBOM generation | Syft; produce SPDX or CycloneDX for each image digest |
-| Image signing | Cosign; verify the signature before promotion |
+| Control | Gate and evidence | Current status |
+| --- | --- | --- |
+| Tests and code quality | Maven test reports and SonarQube quality-gate result in the workflow run | Included in the Maven CI template; verify with a successful run |
+| Secrets | GHAS secret scanning and push protection in the source application repository; Key Vault and MSI for Azure access | Repository-level controls, not Maven CI jobs; verify repository security settings and Azure role assignments |
+| Dependencies | Dependency graph, Dependabot alerts/security updates; optional Dependency Review PR check | Repository-level alerts are separate from CI; verify repository security settings and alert status |
+| Container scanning | Prisma Cloud Compute `twistcli` report tied to the immutable image digest | Implemented as a workflow action; retain the JSON artifact from the run |
+| SBOM generation | Generate SPDX or CycloneDX and associate it with the image digest | Proposed; no SBOM artifact is produced by the current workflow |
+| Image signing | Sign and verify the image digest before promotion | Proposed; signing and verification are not implemented in the current workflow |
+| Production approval | Protected GitHub `prod` Environment with required reviewers and prevent-self-review | Workflow declares the environment; verify the repository Environment settings and deployment approval record |
+
+Infrastructure-as-code policy scanning is intentionally excluded from the current scope because no scanner is available. The Azure Policy guidance elsewhere in this assessment describes Azure resource/cluster governance; it is not evidence of an IaC scanning gate.
 
 ### 6.3 Identity and access
 
@@ -251,59 +281,92 @@ flowchart LR
 
 Use separate managed identities and least-privilege ACR permissions for each import/deploy boundary. Capture the source and destination registry names, commit SHA, image digest, Prisma JSON report, SBOM/signature references, workflow run, approvals, and deployment outcome for every promotion.
 
-> **Implementation gap:** The current caller workflow builds one ACR image and passes its reference directly to all deployment environments. Add explicit ACR import jobs and per-environment registry configuration before describing this promotion flow as operational.
+The application caller now promotes the built digest from Dev to UAT after Dev validation, then from UAT to Prod after UAT validation and production approval. The reusable AKS deployment workflow calls the ACR import action and verifies the destination digest before deployment. Remaining operational prerequisites are populated ACR configuration, environment-specific MSI values, role assignments, and a successful end-to-end run.
+
+The emergency `build_fix` mode follows a separate expedited path: CI builds and scans from the selected `main` commit, the digest is deployed and smoke-tested in Dev, then production approval gates the production MSI importing that digest from Dev to Prod. This emergency path skips UAT; grant the production MSI the required import/read role on Dev as well as Prod. The normal release workflow continues to use UAT as the production import source.
 
 ## 8. Progressive delivery runbook
 
+The strategies below cover both compute types in the Azure target design: an AKS canary and an App Service blue-green slot swap. The current reusable deployment workflow implements a normal AKS rollout and rollback only; it does not yet configure weighted canary routing or deploy App Service slots.
+
 ### 8.1 AKS canary strategy
 
-Deploy the candidate alongside the stable workload. Route a small percentage of traffic to the candidate, pause at each stage, evaluate service and infrastructure signals, and advance only when gates pass.
+Run the stable and candidate versions as separate Kubernetes Deployments/Services. Use the [Azure-supported Istio add-on for AKS](https://learn.microsoft.com/en-us/azure/aks/istio-about) (or another approved weighted-routing gateway) to shift requests to the candidate. Start at 5%, then advance to 25%, 50%, and 100% only after the observation window and gates pass. Require at least 200 candidate requests per stage; if traffic is lower, extend the window to 30 minutes rather than treating missing data as a pass.
 
 | Stage | Candidate traffic | Minimum observation |
 | --- | ---: | --- |
-| Initial | 10% | 10 minutes |
+| Initial | 5% | 10 minutes |
 | Expand | 25% | 10 minutes |
-| Expand | 50% | 10 minutes |
-| Complete | 100% | Continue monitoring for 30 minutes |
+| Expand | 50% | 15 minutes |
+| Complete | 100% | 30 minutes of continued monitoring |
 
-Use Azure Monitor, Application Insights, and Container Insights for request, application, and cluster signals. Define an ingress, service-mesh, or gateway traffic-shifting mechanism before enabling the canary.
+Use [Application Insights](https://learn.microsoft.com/en-us/azure/azure-monitor/app/app-insights-overview) for request/error/latency signals and [Azure Monitor managed Prometheus and Container Insights](https://learn.microsoft.com/en-us/azure/azure-monitor/containers/kubernetes-monitoring-enable) for pod and cluster signals. Suggested initial hard gates are:
 
-### 8.2 Promotion and rollback gates
-
-| Signal | Example threshold |
+| Signal | Fail condition |
 | --- | --- |
-| Error rate | Roll back above 2% |
-| Availability | Roll back below 99.5% |
-| Response time | Investigate/rollback above 500 ms or the service SLO |
-| Failed health checks | Roll back after more than 5 consecutive failures |
+| HTTP 5xx rate | At least 2% over a 5-minute window, with 200 or more candidate requests, in two consecutive windows |
+| Availability | Below 99.5% over a 10-minute window |
+| p95 request duration | Above the service SLO, or more than 20% above the stable version, in two consecutive 5-minute windows |
+| Candidate pod health | Any candidate pod remains unready for 5 minutes, enters `CrashLoopBackOff`, or restarts more than twice in 10 minutes |
+| Resource saturation | Candidate CPU or memory remains above 85% of its configured limit for 10 minutes |
 
-Stop promotion and restore the stable version when a hard threshold is breached. Preserve logs, events, metric snapshots, and the candidate digest for diagnosis. Tune thresholds per service SLO and traffic volume before production use.
+On a hard-gate breach, immediately set candidate traffic to 0% and stable traffic to 100%; stop further promotion and retain the candidate pods, logs, metrics, and digest for investigation. If the stable version has already been replaced, redeploy the last-known-good immutable digest and verify readiness before resuming traffic. The current `kubectl rollout undo` behavior is not a substitute for weighted-route rollback; route configuration and rollback automation must be added before claiming canary automation is operational. Azure's Istio add-on supports traffic management and canary scenarios; Azure Monitor provides the required AKS telemetry.
+
+### 8.2 Azure App Service blue-green strategy
+
+For eligible App Service plans (Standard, Premium, or Isolated), deploy the candidate to a `staging` deployment slot while production continues serving the stable version. Keep slot-specific settings and connection strings marked as deployment-slot settings. Warm the staging slot, run smoke/health checks, and observe its metrics before swapping staging into production. If a staged traffic ramp is needed, use [App Service slot traffic routing](https://learn.microsoft.com/en-us/azure/app-service/deploy-staging-slots) (for example 5%, 25%, and 50%) and apply the same request gates as the AKS canary. Otherwise keep staging at 0% and use a blue-green swap.
+
+Use Application Insights and Azure Monitor App Service metrics, plus the [App Service Health check endpoint](https://learn.microsoft.com/en-us/azure/app-service/monitor-instances-health-check). Apply the HTTP 5xx, availability, and p95 gates above; additionally stop the swap if the staging health check is unhealthy for 5 minutes or CPU/memory is above 85% for 10 minutes. After a successful swap, monitor production for 30 minutes. On failure, swap back to the last-known-good slot and confirm health before closing the incident. App Service slots provide a pre-production validation point and retain the previous production app after a swap, enabling this rollback path.
+
+### 8.3 Promotion and rollback gates
+
+For either compute type, stop promotion when a hard threshold is breached. Preserve the release commit, source/destination image digests, slot or route weights, approval records, Azure Monitor metric snapshots, application logs, and rollback result. Treat insufficient request volume, missing telemetry, or an unhealthy monitoring dependency as **no-go**, not as a passing gate. Tune the example thresholds against each service SLO before production use.
+
+### 8.4 Database-change handling (future only)
+
+The current application architecture has no database, so no migration job, database credential, or database approval is part of today's pipeline. If a future service adds Azure SQL or another datastore, use an expand-and-contract release:
+
+1. Make additive, backward-compatible schema changes first; version the migration, make it idempotent, and run it as a separate least-privilege job before deploying code that depends on it.
+2. Deploy code that can work with both old and new schema, backfill in bounded/restartable batches, and verify row counts and application invariants before switching reads/writes.
+3. Remove old schema only in a later approved release after all old application instances are gone and the rollback window has expired. Do not automatically run a destructive down-migration when application rollback occurs.
+4. For Azure SQL, confirm the configured backup retention and test [point-in-time restore](https://learn.microsoft.com/en-us/azure/azure-sql/database/recovery-using-backups) to a separate database before relying on recovery. For a failed irreversible migration or data corruption, stop rollout, preserve evidence, restore to a new database at the chosen point in time, validate it, and perform a controlled connection cutover; do not overwrite the source database as an automatic rollback.
+
+This is a future policy only, not a claim that the current Maven application uses a database. Azure SQL automated backups and point-in-time restore are the provider-native recovery mechanism referenced for that future case.
 
 ## 9. Emergency change workflow
 
 Emergency changes are for active incidents or material security risks, not schedule pressure.
 
-In the application repository, `.github/workflows/emergency-deploy.yml` provides a manual production deployment path. It requires an incident/change ID and an immutable image digest, only accepts dispatches from `main`, and calls the centrally maintained AKS deployment workflow. The selected image must already be scanned, approved, and present in the production ACR; the reusable deployment workflow checks it against `azure.acr.prod.login_server` in `configuration/maven-config.yaml`. This workflow does not build or promote images. After rollout, it runs the production `azure.aks.prod.smoke_test_url`; failure triggers a rollback attempt and fails the run. The protected `prod` Environment still requires reviewer approval.
+In the application repository, `.github/workflows/emergency-deploy.yml` is manually dispatched from `main` with an incident/change ID and one of two actions:
+
+- **`rollback`:** provide a known-good immutable image digest already present in the production ACR. The reusable AKS deployment workflow verifies the registry and digest, waits for the `prod` Environment approval, deploys it, and runs the production smoke test. A failed smoke test triggers a rollback attempt.
+- **`build_fix`:** leave the image input empty. The workflow calls the reusable Maven CI workflow against the selected `main` commit. CI runs Maven tests and SonarQube, builds the image into the Dev ACR, scans it with Prisma `twistcli`, and retains the JSON report. After all gates pass, it deploys the immutable digest to Dev and runs the configured Dev smoke test. The protected `prod` Environment then pauses for reviewer approval; after approval, the production MSI imports the same digest from Dev into Prod, verifies it, deploys it, and runs the production smoke test. A failed test or scan blocks promotion. This emergency path skips UAT; the standard release flow continues to require UAT validation.
+
+This design supports both recovery from a bad release and remediation of a new defect or Sev1 vulnerability without rebuilding an unscanned image or skipping the production approval. The new fix must be merged to protected `main` before dispatch. The workflow does not include an emergency gate-bypass input.
 
 ```mermaid
 flowchart TD
-    A[Incident declared] --> B[Incident commander and service owner approve]
-    B --> C[Activate time-bound PIM access]
-    C --> D[Run minimum tests and security checks]
-    D --> E[Deploy immutable digest to smallest scope]
-    E --> F[Smoke test and monitor]
-    F --> G{Healthy?}
-    G -- Yes --> H[Record evidence and reconcile]
-    G -- No --> I[Rollback and continue incident response]
-    I --> H
+    A[Incident declared and approved] --> B[Dispatch from protected main with incident ID]
+    B --> C{Emergency action}
+    C -- rollback --> D[Select known-good production digest]
+    C -- build_fix --> E[Run Maven tests and SonarQube]
+    E --> F[Build in Dev ACR and run Prisma scan]
+    F --> G[Deploy to Dev and smoke test]
+    D --> H[Required production Environment approval]
+    G --> H
+    H --> I[Import to Prod ACR, verify, deploy, and smoke test]
+    I --> J{Healthy?}
+    J -- Yes --> K[Record evidence and reconcile]
+    J -- No --> L[Rollback and continue incident response]
+    L --> K
 ```
 
 ### Required controls
 
 - Record the incident/change ID, severity, service, impact, incident commander, and approvers.
-- Dispatch the emergency workflow from `main` with the incident/change ID and already-approved production image digest; retain its run URL as incident evidence.
+- Dispatch the workflow from protected `main`. For `rollback`, provide the known-good production digest; for `build_fix`, leave the digest input empty so CI builds and scans the fix from the selected commit. Retain the run URL and source commit as incident evidence.
 - Activate least-privilege Microsoft Entra PIM access with MFA and justification; maximum activation duration is **4 hours**.
-- Retain minimum pipeline gates: build/focused tests, image scan/signature verification, and smoke test. Keep application-repository GHAS secret scanning/push protection and Dependabot alerts enabled as independent repository controls, not as CI stages.
+- Retain the available pipeline gates: Maven tests, SonarQube, Prisma image scan, Dev smoke test for a new build, production approval, and production smoke test. No emergency gate bypass is implemented. Keep application-repository GHAS secret scanning/push protection and Dependabot alerts enabled as independent repository controls, not as CI stages; SBOM generation and image signing remain proposed, not implemented.
 - Deploy one immutable digest to the smallest affected scope; monitor health and retain a rollback option.
 - Capture commit, digest, approvals, PIM activation, pipeline run, test/scan results, and before/after monitoring signals.
 - Complete a post-incident review within **48 hours**. Back-merge the change, remove temporary access, close exceptions, and assign corrective actions.
@@ -351,13 +414,30 @@ Project teams receive an onboarding guide, deployment runbook, troubleshooting g
 
 ## 12. Validation approach
 
-| Validation area | Checks |
-| --- | --- |
-| Functional | Build, tests, deployment, artifact digest consistency, and environment promotion |
-| Source-repository security | GHAS secret scanning/push protection and Dependabot alerts enabled on the application repository |
-| CI security | SonarQube, container scans, signature verification, and any explicitly configured PR review jobs |
-| Operational | Canary progression, rollback, monitoring alerts, and evidence retention |
-| Governance | Pull-request approval, CODEOWNERS enforcement, required checks, environment approvals, and bypass audit |
+| Validation area | Checks | Evidence to retain |
+| --- | --- | --- |
+| Functional | Build, tests, deployment, artifact digest consistency, and environment promotion | GitHub run URL, Maven test reports, SonarQube quality-gate result, source/destination image digests |
+| Source-repository security | GHAS secret scanning/push protection and Dependabot alerts enabled on the application repository | Application-repository security settings and alert status; these are not Maven CI jobs |
+| CI security | SonarQube and Prisma container scan; SBOM/signing only after implementation | SonarQube gate and Prisma JSON report tied to the image digest; do not claim SBOM/signing evidence until artifacts exist |
+| Operational | Canary or slot progression, rollback, monitoring alerts, and evidence retention | Azure Monitor/Application Insights metric snapshots, route weights or slot-swap history, and rollback result |
+| Governance | Pull-request approval, CODEOWNERS enforcement, required checks, environment approvals, and bypass audit | Ruleset/Environment settings and deployment approval history |
+
+### Evidence map for the assessment
+
+Provider documentation in the References section substantiates that a capability exists; it is not proof that the capability is enabled in this tenant. Attach or link tenant-specific evidence alongside the assessment or in the release record:
+
+| Requirement | Evidence location or artifact | Current status |
+| --- | --- | --- |
+| Reusable workflows, artifact flow, promotion, and team extension points | Platform and application workflow/action YAML; a single run showing commit SHA and digest continuity through Dev, UAT, and Prod | Templates and digest-promotion action are in the repositories; populate config/RBAC and capture a successful run |
+| Human roles and Azure identities | GitHub team/repository permission evidence, `CODEOWNERS` and PR approvals; redacted Azure role assignments for build, UAT, Prod, and AKS kubelet identities; verify the Prod MSI can import from UAT for standard releases and Dev for emergency fixes | Least-privilege role model is specified; GitHub memberships and Azure assignments must be verified in the tenant |
+| Tests and quality | Maven test reports and SonarQube quality-gate result from the workflow run | Included in the Maven CI template |
+| IaC policy gate | No workflow or scan artifact exists; Azure Policy guidance is separate from IaC scanning | Explicitly excluded from current scope; this rubric item is not met by the present implementation |
+| Secrets and dependencies | GitHub repository security-settings evidence and Dependabot/GHAS alert status | Repository-level controls; verify in each application repository |
+| Container security, SBOM, and signing | Prisma JSON artifact linked to the image digest; SBOM file and signature-verification record when implemented | Container scan is implemented; SBOM and signing are proposed, not evidenced |
+| Production approval | `prod` Environment settings and the approved deployment's GitHub run record | Screenshots show required reviewers and prevent-self-review enabled, but administrator bypass is also enabled; disable bypass and capture a successful approval record |
+| AKS canary | Istio/gateway route-weight configuration plus Azure Monitor/Application Insights telemetry at every traffic stage and rollback record | Strategy specified; weighted traffic and automated canary rollback are not implemented in the current AKS action |
+| App Service blue-green | App Service staging-slot settings, health-check status, swap history, and Application Insights/Azure Monitor evidence | Strategy specified; App Service deployment template is not implemented in this repository |
+| Database changes | No database is present in the current application; if added, retain migration run, compatibility checks, and Azure SQL point-in-time restore test evidence | Future-only policy; no current migration job or database evidence |
 
 Test policy changes in a representative repository before broad enforcement. Validate both the normal path and failure paths, including a failed check, rejected production approval, unhealthy rollout, and emergency rollback.
 
@@ -393,10 +473,22 @@ The proposed platform gives forty engineering teams a secure, scalable delivery 
 - [GitHub Advanced Security](https://docs.github.com/en/get-started/learning-about-github/about-github-advanced-security)
 - [GitHub Actions Runner Controller](https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners-with-actions-runner-controller)
 - [Azure Kubernetes Service](https://learn.microsoft.com/en-us/azure/aks/)
+- [Istio-based service mesh add-on for AKS](https://learn.microsoft.com/en-us/azure/aks/istio-about)
 - [Azure Container Registry](https://learn.microsoft.com/en-us/azure/container-registry/)
+- [Import container images into ACR](https://learn.microsoft.com/en-us/azure/container-registry/container-registry-import-images)
 - [Azure Key Vault](https://learn.microsoft.com/en-us/azure/key-vault/)
 - [Azure managed identities](https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/overview)
 - [Azure Monitor](https://learn.microsoft.com/en-us/azure/azure-monitor/)
+- [Enable Azure Monitor for AKS](https://learn.microsoft.com/en-us/azure/azure-monitor/containers/kubernetes-monitoring-enable)
+- [Azure Monitor alerts](https://learn.microsoft.com/en-us/azure/azure-monitor/alerts/alerts-overview)
+- [Application Insights](https://learn.microsoft.com/en-us/azure/azure-monitor/app/app-insights-overview)
+- [App Service staging slots](https://learn.microsoft.com/en-us/azure/app-service/deploy-staging-slots)
+- [App Service Health check](https://learn.microsoft.com/en-us/azure/app-service/monitor-instances-health-check)
+- [Azure SQL point-in-time restore](https://learn.microsoft.com/en-us/azure/azure-sql/database/recovery-using-backups)
+- [GitHub deployment environments](https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment)
+- [GitHub deployment protection rules and required reviewers](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments#required-reviewers)
+- [GitHub repository roles](https://docs.github.com/en/organizations/managing-user-access-to-your-organizations-repositories/managing-repository-roles/repository-roles-for-an-organization)
+- [GitHub rulesets](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets)
 - [Microsoft Well-Architected Framework](https://learn.microsoft.com/en-us/azure/well-architected/)
 
 ### AI assistance disclosure
